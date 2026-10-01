@@ -26,7 +26,7 @@
         </pattern>
       </track>
       <track type="0" muted="0" name="Bass" solo="0">
-        <instrumenttrack pitch="0" vol="60" fxch="0" pan="0" basenote="57" usemasterpitch="1" pitchrange="1">
+        <instrumenttrack pitch="0" vol="50" fxch="0" pan="0" basenote="57" usemasterpitch="1" pitchrange="1">
           <instrument name="tripleoscillator">
             <tripleoscillator wavetype0="0" wavetype1="0" wavetype2="0" coarse0="0" coarse1="0" coarse2="0" finer0="0" finer1="0" finer2="0" vol0="100" vol1="0" vol2="0" pan0="0" pan1="0" pan2="0" phoffset0="0" phoffset1="0" phoffset2="0" stphdetun0="0" stphdetun1="0" stphdetun2="0" modalgo1="2" modalgo2="2" modalgo3="2" userwavefile0="" userwavefile1="" userwavefile2=""/>
           </instrument>
@@ -46,7 +46,7 @@
         </pattern>
       </track>
       <track type="0" muted="0" name="Arp" solo="0">
-        <instrumenttrack pitch="0" vol="55" fxch="0" pan="0" basenote="57" usemasterpitch="1" pitchrange="1">
+        <instrumenttrack pitch="0" vol="48" fxch="0" pan="0" basenote="57" usemasterpitch="1" pitchrange="1">
           <instrument name="organic">
             <organic/>
           </instrument>
@@ -72,7 +72,7 @@
         </pattern>
       </track>
       <track type="0" muted="0" name="Kick" solo="0">
-        <instrumenttrack pitch="0" vol="80" fxch="0" pan="0" basenote="57" usemasterpitch="1" pitchrange="1">
+        <instrumenttrack pitch="0" vol="62" fxch="0" pan="0" basenote="57" usemasterpitch="1" pitchrange="1">
           <instrument name="kicker">
             <kicker/>
           </instrument>

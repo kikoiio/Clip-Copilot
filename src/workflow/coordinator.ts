@@ -1,4 +1,5 @@
 import { mkdir, readFile, cp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,7 +19,7 @@ import {
   scoreDurationMs,
 } from "../domain.ts";
 import { ingestAsset, checkAsset } from "../assets/catalog.ts";
-import { renderScoreWav, scorePlanFingerprint, writeScoreProject } from "../score/lmms.ts";
+import { SCORE_ADAPTER_REV, renderScoreWav, scorePlanFingerprint, writeScoreProject } from "../score/lmms.ts";
 import { editPlanFingerprint, renderVideoMp4, writeEditProject } from "../video/kdenlive.ts";
 import { saveRunEvidence } from "../infra/process.ts";
 import {
@@ -41,8 +42,16 @@ import {
   createCheckpoint,
 } from "../workspace/store.ts";
 
-/** 仓库根目录（src/workflow/ 的上两级），保证模板路径不依赖进程 CWD。 */
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+/** 仓库根目录（包含 package.json 的最近祖先），保证模板路径不依赖进程 CWD 与源码/dist 布局差异。 */
+function findRepoRoot(start: string): string {
+  let current = start;
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(path.join(current, "package.json"))) return current;
+    current = path.dirname(current);
+  }
+  return start;
+}
+const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)));
 
 const WORKSPACE_SUBDIRS = ["assets", "projects", "checkpoints", "outputs", "evidence"] as const;
 
@@ -185,7 +194,8 @@ function requireWorkspaceArg(args: string[]): string {
   if (index === -1 || args[index + 1] === undefined) {
     throw new WorkspaceError("缺少 --workspace 参数");
   }
-  return args[index + 1]!;
+  // 统一为绝对路径：后续所有 join/resolve 都以此为基准。
+  return path.resolve(args[index + 1]!);
 }
 
 function getOption(args: string[], flag: string): string | undefined {
@@ -229,7 +239,8 @@ export async function cmdScore(args: string[]): Promise<number> {
     console.log(JSON.stringify(loaded.state.scorePlan ?? {}, null, 2));
     return 0;
   }
-  if (loaded.state.phase !== "assets" && loaded.state.phase !== "score_draft") {
+  if (loaded.state.phase !== "assets" && loaded.state.phase !== "score_draft"
+    && !(loaded.state.phase === "score_review" && !hasPendingCheckpoint(loaded, "score_review"))) {
     throw new WorkspaceError(`当前阶段 ${loaded.state.phase} 不允许写入配乐方案`);
   }
   if (loaded.state.assets.length === 0) {
@@ -274,22 +285,28 @@ export async function cmdEdit(args: string[]): Promise<number> {
   return 0;
 }
 
+function hasPendingCheckpoint(loaded: Loaded, phase: "score_review" | "video_review"): boolean {
+  return loaded.state.checkpoints.some((c) => c.phase === phase && c.review === "pending");
+}
+
 async function runScoreRender(loaded: Loaded): Promise<number> {
-  if (loaded.state.phase !== "score_draft") {
-    throw new WorkspaceError(`当前阶段 ${loaded.state.phase} 不允许渲染配乐（需要在 score_draft）`);
+  // 检查点提交前允许重新渲染（例如削波修正）；提交后必须走 review 流程。
+  const phase = loaded.state.phase;
+  if (phase !== "score_draft" && !(phase === "score_review" && !hasPendingCheckpoint(loaded, "score_review"))) {
+    throw new WorkspaceError(`当前阶段 ${phase} 不允许渲染配乐（需要在 score_draft 或未提交检查点的 score_review）`);
   }
   const plan = loaded.state.scorePlan;
   if (!plan) throw new WorkspaceError("还没有配乐方案，先运行 score --plan");
   const fingerprint = scorePlanFingerprint(plan);
-  const existingProject = findArtifactByTag(loaded.state, `scoreplan:${fingerprint}`);
+  const tag = `scoreplan:${fingerprint}:a${SCORE_ADAPTER_REV}`;
+  const existingProject = findArtifactByTag(loaded.state, tag);
   if (existingProject) {
     console.log(`配乐方案未变化，已有产物：${existingProject.id}（${existingProject.path}）`);
     printStateSummary(loaded);
     return 0;
   }
   const evidenceDir = path.join(loaded.dir, "evidence");
-  const tag = `scoreplan:${fingerprint}`;
-  const projectPath = path.join(loaded.dir, "projects", `score-${fingerprint}.mmp`);
+  const projectPath = path.join(loaded.dir, "projects", `score-${fingerprint}-a${SCORE_ADAPTER_REV}.mmp`);
   const templatePath = path.join(REPO_ROOT, "templates", "lmms", "base.mmp");
   await writeScoreProject(plan, templatePath, projectPath);
   const projectArtifact = await registerArtifact(loaded, {
@@ -297,7 +314,7 @@ async function runScoreRender(loaded: Loaded): Promise<number> {
     file: projectPath,
     basedOn: [tag, "template:lmms-base"],
   });
-  const wavPath = path.join(loaded.dir, "outputs", `score-${fingerprint}.wav`);
+  const wavPath = path.join(loaded.dir, "outputs", `score-${fingerprint}-a${SCORE_ADAPTER_REV}.wav`);
   const rendered = await renderScoreWav(projectPath, wavPath, evidenceDir);
   const targetMs = scoreDurationMs(plan);
   const wavMedia = await probeMedia(wavPath);
@@ -308,12 +325,14 @@ async function runScoreRender(loaded: Loaded): Promise<number> {
     minDurationMs: targetMs - AV_TOLERANCE_MS,
   });
   const allPass = wavChecks.every((c) => c.status === "pass");
+  // 逐件入列：nextId 依赖已登记列表，先推后注册避免 ID 重复。
+  loaded.state.artifacts.push(projectArtifact);
   const wavArtifact = await registerArtifact(loaded, {
     kind: "audio_preview",
     file: wavPath,
     basedOn: [projectArtifact.id, tag],
   });
-  loaded.state.artifacts.push(projectArtifact, wavArtifact);
+  loaded.state.artifacts.push(wavArtifact);
   if (!allPass) {
     const failed = wavChecks.filter((c) => c.status === "fail");
     addIssue(loaded, "render_score_failed", failed.map((c) => `${c.id}: ${c.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
@@ -322,10 +341,12 @@ async function runScoreRender(loaded: Loaded): Promise<number> {
     console.error(`配乐渲染检查未通过：${failed.map((c) => c.id).join(", ")}`);
     return 1;
   }
-  await checkPhaseTransition(loaded, "score_review");
-  loaded.state.phase = "score_review";
+  if (loaded.state.phase === "score_draft") {
+    await checkPhaseTransition(loaded, "score_review");
+    loaded.state.phase = "score_review";
+  }
   loaded.state.nextAction = "用 checkpoint 提交配乐检查点，然后请创作者审阅。";
-  addDecision(loaded, `配乐 ${fingerprint} 渲染完成`, `时长漂移 ${drift}ms ≤ ${AV_TOLERANCE_MS}ms`, "进入 score_review，等待检查点与审阅");
+  addDecision(loaded, `配乐 ${fingerprint} 渲染完成（a${SCORE_ADAPTER_REV}）`, `时长漂移 ${drift}ms ≤ ${AV_TOLERANCE_MS}ms`, "进入 score_review，等待检查点与审阅");
   await persist(loaded);
   await writeHandoff(loaded);
   console.log(`配乐工程: ${projectArtifact.path}`);
@@ -335,16 +356,20 @@ async function runScoreRender(loaded: Loaded): Promise<number> {
 }
 
 async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promise<number> {
-  const expectedPhase = kind === "preview" ? "video_draft" : "final_verify";
-  if (loaded.state.phase !== expectedPhase) {
-    throw new WorkspaceError(`当前阶段 ${loaded.state.phase} 不允许渲染视频 ${kind}`);
+  if (kind === "preview") {
+    const phase = loaded.state.phase;
+    if (phase !== "video_draft" && !(phase === "video_review" && !hasPendingCheckpoint(loaded, "video_review"))) {
+      throw new WorkspaceError(`当前阶段 ${phase} 不允许渲染视频预览`);
+    }
+  } else if (loaded.state.phase !== "final_verify") {
+    throw new WorkspaceError(`当前阶段 ${loaded.state.phase} 不允许渲染视频终版`);
   }
   const plan = loaded.state.editPlan;
   if (!plan) throw new WorkspaceError("还没有剪辑方案，先运行 edit --plan");
   const evidenceDir = path.join(loaded.dir, "evidence");
   if (kind === "preview") {
     const fingerprint = editPlanFingerprint(plan);
-    const tag = `editplan:${fingerprint}`;
+    const tag = `editplan:${fingerprint}:a1`;
     const existing = findArtifactByTag(loaded.state, tag);
     if (existing) {
       console.log(`剪辑方案未变化，已有产物：${existing.id}（${existing.path}）`);
@@ -357,8 +382,8 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     }
     const wavFile = workspacePath(loaded.dir, soundtrack.path);
     const wavMedia = await probeMedia(wavFile);
-    const projectPath = path.join(loaded.dir, "projects", `edit-${fingerprint}.kdenlive`);
-    const templatePath = path.resolve("templates/kdenlive/base.kdenlive");
+    const projectPath = path.join(loaded.dir, "projects", `edit-${fingerprint}-a1.kdenlive`);
+    const templatePath = path.join(REPO_ROOT, "templates", "kdenlive", "base.kdenlive");
     await writeEditProject(
       plan, loaded.dir, loaded.state.assets, wavFile, wavMedia.durationMs, templatePath, projectPath,
     );
@@ -366,7 +391,8 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     const projectArtifact = await registerArtifact(loaded, {
       kind: "kdenlive_project", file: projectPath, basedOn,
     });
-    const mp4Path = path.join(loaded.dir, "outputs", `preview-${fingerprint}.mp4`);
+    loaded.state.artifacts.push(projectArtifact);
+    const mp4Path = path.join(loaded.dir, "outputs", `preview-${fingerprint}-a1.mp4`);
     const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
     const mp4Checks = await checkMediaBasics(mp4Path, {
       hasVideo: true, hasAudio: true,
@@ -376,7 +402,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     const mp4Artifact = await registerArtifact(loaded, {
       kind: "video_preview", file: mp4Path, basedOn: [projectArtifact.id, tag],
     });
-    loaded.state.artifacts.push(projectArtifact, mp4Artifact);
+    loaded.state.artifacts.push(mp4Artifact);
     if (!allPass) {
       const failed = mp4Checks.filter((c) => c.status === "fail");
       addIssue(loaded, "render_video_failed", failed.map((c) => `${c.id}: ${c.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
@@ -385,10 +411,12 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
       console.error(`粗剪渲染检查未通过：${failed.map((c) => c.id).join(", ")}`);
       return 1;
     }
-    await checkPhaseTransition(loaded, "video_review");
-    loaded.state.phase = "video_review";
+    if (loaded.state.phase === "video_draft") {
+      await checkPhaseTransition(loaded, "video_review");
+      loaded.state.phase = "video_review";
+    }
     loaded.state.nextAction = "用 checkpoint 提交粗剪检查点，然后请创作者审阅。";
-    addDecision(loaded, `粗剪 ${fingerprint} 渲染完成`, `Kdenlive 导出耗时 ${rendered.seconds.toFixed(1)}s`, "进入 video_review，等待检查点与审阅");
+    addDecision(loaded, `粗剪 ${fingerprint} 渲染完成（a1）`, `Kdenlive 导出耗时 ${rendered.seconds.toFixed(1)}s`, "进入 video_review，等待检查点与审阅");
     await persist(loaded);
     await writeHandoff(loaded);
     console.log(`剪辑工程: ${projectArtifact.path}`);
@@ -412,6 +440,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   const finalWavArtifact = await registerArtifact(loaded, {
     kind: "audio_final", file: finalWav, basedOn: [soundtrack.id], status: "confirmed",
   });
+  loaded.state.artifacts.push(finalWavArtifact);
   const projectPath = path.join(loaded.dir, "projects", "final.kdenlive");
   const templatePath = path.join(REPO_ROOT, "templates", "kdenlive", "base.kdenlive");
   await writeEditProject(plan, loaded.dir, loaded.state.assets, finalWav, wavMedia.durationMs, templatePath, projectPath);
@@ -419,6 +448,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     kind: "kdenlive_project", file: projectPath,
     basedOn: [videoCheckpoint.id, ...plan.clips.map((c) => c.assetId)], status: "confirmed",
   });
+  loaded.state.artifacts.push(projectArtifact);
   const mp4Path = path.join(loaded.dir, "outputs", "final.mp4");
   const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
   const mp4Checks = await checkMediaBasics(mp4Path, {
@@ -432,7 +462,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   const mp4Artifact = await registerArtifact(loaded, {
     kind: "video_final", file: mp4Path, basedOn: [projectArtifact.id, finalWavArtifact.id], status: "confirmed",
   });
-  loaded.state.artifacts.push(finalWavArtifact, projectArtifact, mp4Artifact);
+  loaded.state.artifacts.push(mp4Artifact);
   const analysisFile = path.join(evidenceDir, "final-quality-analysis.json");
   await writeFile(
     analysisFile,
@@ -462,8 +492,8 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
 
 export async function cmdRender(args: string[]): Promise<number> {
   const dir = requireWorkspaceArg(args);
-  const target = args.find((a) => !a.startsWith("--"));
-  if (target !== "score" && target !== "video" && target !== "final") {
+  const target = args.find((a) => a === "score" || a === "video" || a === "final");
+  if (!target) {
     throw new WorkspaceError("render 需要 score|video|final 目标");
   }
   const loaded = await loadWorkspace(dir);

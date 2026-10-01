@@ -19,6 +19,13 @@ export interface LmmsTemplate {
 
 export const EXPECTED_LMMS_SERIES = "1.2";
 
+/**
+ * 生成工程的主音量（%）。LMMS 各轨直接相加极易顶满 0 dBFS（实测 pad 三和弦即削波），
+ * 固定 50% ≈ -6dB 余量，保证 N3「无明显破音」；行为变化时递增 ADAPTER_REV 以触发重生成。
+ */
+export const SCORE_MASTERVOL = 42;
+export const SCORE_ADAPTER_REV = 5;
+
 /** 读取并校验模板：版本、song 结构、head、轨道。校验不过给明确错误。 */
 export function loadLmmsTemplate(templateXml: string, sourceName: string): LmmsTemplate {
   const doc = new DOMParser().parseFromString(templateXml, "application/xml");
@@ -157,6 +164,7 @@ export async function writeScoreProject(
     bpm: plan.bpm,
     timesig_numerator: 4,
     timesig_denominator: 4,
+    mastervol: SCORE_MASTERVOL,
   });
 
   const bars = plan.sections.reduce((sum, s) => sum + s.bars, 0);

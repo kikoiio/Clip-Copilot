@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mlt LC_NUMERIC="C" version="7.41.0" title="Anonymous Submission" producer="main_bin">
+  <profile description="HD 1080p 30 fps" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="16" display_aspect_den="9" frame_rate_num="30" frame_rate_den="1" colorspace="709"/>
+  <producer id="black_track" in="0" out="29">
+    <property name="length">30</property>
+    <property name="eof">pause</property>
+    <property name="resource">black</property>
+    <property name="aspect_ratio">1</property>
+    <property name="mlt_service">color</property>
+    <property name="mlt_image_format">rgba</property>
+    <property name="set.test_audio">0</property>
+  </producer>
+  <producer id="template_clip0" in="0" out="29">
+    <property name="length">30</property>
+    <property name="eof">pause</property>
+    <property name="resource">/home/neo/Projects/Fun/testmedia/clip-1s-1080p30.mp4</property>
+    <property name="mlt_service">avformat</property>
+    <property name="seekable">1</property>
+    <property name="mute_on_pause">0</property>
+    <property name="kdenlive:clipname">clip-1s-1080p30.mp4（模板兼容性测试素材，正式工程生成时会被移除）</property>
+    <property name="kdenlive:id">1</property>
+    <property name="kdenlive:folderid">-1</property>
+    <property name="kdenlive:duration">30</property>
+  </producer>
+  <playlist id="main_bin" xml_retain="1">
+    <property name="kdenlive:docproperties.activeTrack">0</property>
+    <property name="kdenlive:docproperties.version">1.1</property>
+    <property name="kdenlive:docproperties.projectname">mountain-morning</property>
+    <property name="kdenlive:docproperties.profile">atsc_1080p_30</property>
+    <property name="kdenlive:docproperties.documentid">1759296000000</property>
+    <property name="kdenlive:documentnotes">山间清晨短片工作流的最小模板：一条视频轨 + 一条音频轨。经 Kdenlive 26.08.1 渲染验证。</property>
+    <entry producer="template_clip0"/>
+  </playlist>
+  <playlist id="timeline_track0">
+    <property name="kdenlive:track_name">V1</property>
+    <property name="kdenlive:audio_track">0</property>
+    <property name="kdenlive:locked">0</property>
+    <entry producer="template_clip0" in="0" out="29"/>
+  </playlist>
+  <playlist id="timeline_track1">
+    <property name="kdenlive:track_name">A1</property>
+    <property name="kdenlive:audio_track">1</property>
+    <property name="kdenlive:locked">0</property>
+  </playlist>
+  <tractor id="tractor0" title="Anonymous Submission" global_feed="1" in="0" out="29" background="black_track">
+    <property name="kdenlive:project_type">video</property>
+    <property name="kdenlive:documentid">1759296000000</property>
+    <track producer="black_track"/>
+    <track producer="timeline_track0"/>
+    <track producer="timeline_track1"/>
+    <transition id="transition0">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="compositing">0</property>
+      <property name="distort">0</property>
+      <property name="rotate_center">0</property>
+      <property name="mlt_service">qtblend</property>
+      <property name="kdenlive_id">qtblend</property>
+      <property name="always_active">1</property>
+    </transition>
+    <transition id="transition1">
+      <property name="a_track">0</property>
+      <property name="b_track">2</property>
+      <property name="duck_threshold">0</property>
+      <property name="duck_attenuation">-12</property>
+      <property name="duck_level">0</property>
+      <property name="duck_fade_in">1500</property>
+      <property name="duck_fade_out">250</property>
+      <property name="prefix"></property>
+      <property name="mlt_service">mix</property>
+      <property name="kdenlive_id">mix</property>
+      <property name="always_active">1</property>
+      <property name="sum">1</property>
+    </transition>
+  </tractor>
+</mlt>

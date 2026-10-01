@@ -1,0 +1,23 @@
+{
+  "name": "mountain-morning-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "山间清晨短片工作流：素材登记、LMMS 配乐、Kdenlive 剪辑与验证",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json",
+    "test": "npm run -s build && node --test tests/*.test.ts",
+    "cli": "node dist/src/cli.js"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

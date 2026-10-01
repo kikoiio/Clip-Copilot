@@ -240,7 +240,8 @@ export async function renderScoreWav(
   evidenceDir?: string,
   timeoutMs = 30 * 60_000,
 ): Promise<RenderWavResult> {
-  await mkdir(path.dirname(outputWav), { recursive: true });
+  // 不自动创建父目录：输出目录由工作区 init 预先建立，
+  // 无效输出路径应当原样失败，便于故障演练（T13/T35）。
   // -l（Render as a loop）：LMMS 默认会在片尾多渲染一小节垫尾，-l 让导出止于内容结尾。
   const run = await runLmms(
     ["render", projectPath, "-f", "wav", "-o", outputWav, "-s", "44100", "-l"],

@@ -215,6 +215,7 @@ export async function createCheckpoint(
   };
   const directory = path.join("checkpoints", checkpoint.id);
   const absoluteDir = path.join(loaded.dir, directory);
+  await mkdir(path.dirname(absoluteDir), { recursive: true });
   await mkdir(absoluteDir, { recursive: false }).catch((err: NodeJS.ErrnoException) => {
     if (err.code === "EEXIST") {
       throw new WorkspaceError(`检查点目录 ${directory} 已存在，拒绝覆盖`);

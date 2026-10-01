@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** 单次进程调用的完整结果，包含可保存为证据的输出。 */
@@ -107,10 +107,39 @@ export function runLmms(args: string[], options: RunOptions = {}): Promise<RunRe
   return runProcess(LMMS_APPIMAGE, args, { ...options, env: appImageEnv(options.env) });
 }
 
-export function runKdenlive(args: string[], options: RunOptions = {}): Promise<RunResult> {
+let cachedProfilesPath: string | undefined | null = null;
+
+/**
+ * Kdenlive AppImage 内的 MLT profiles 目录：不定它，项目规格会回落 720×576 PAL。
+ * 通过解析一次 --version 输出中的解压路径定位，结果缓存。
+ */
+async function mltProfilesPath(): Promise<string | undefined> {
+  if (cachedProfilesPath !== null) return cachedProfilesPath;
+  if (process.env.MLT_PROFILES_PATH) {
+    cachedProfilesPath = process.env.MLT_PROFILES_PATH;
+    return cachedProfilesPath;
+  }
+  const probe = await runProcess(KDENLIVE_APPIMAGE, ["--version"], {
+    env: appImageEnv({ QT_QPA_PLATFORM: "offscreen" }),
+    timeoutMs: 5 * 60_000,
+  });
+  const output = probe.stdout + probe.stderr;
+  const match = /\/tmp\/appimage_extracted_[A-Za-z0-9]+/.exec(output);
+  if (match) {
+    const candidate = `${match[0]}/usr/share/mlt-7/profiles`;
+    const ok = await stat(candidate).then((s) => s.isDirectory()).catch(() => false);
+    cachedProfilesPath = ok ? candidate : undefined;
+  } else {
+    cachedProfilesPath = undefined;
+  }
+  return cachedProfilesPath;
+}
+
+export async function runKdenlive(args: string[], options: RunOptions = {}): Promise<RunResult> {
+  const profiles = await mltProfilesPath();
   return runProcess(KDENLIVE_APPIMAGE, args, {
     ...options,
-    env: appImageEnv({ QT_QPA_PLATFORM: "offscreen", ...options.env }),
+    env: appImageEnv({ QT_QPA_PLATFORM: "offscreen", ...(profiles ? { MLT_PROFILES_PATH: profiles } : {}), ...options.env }),
   });
 }
 

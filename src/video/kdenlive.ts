@@ -309,7 +309,7 @@ export async function renderVideoMp4(
   preset?: string,
   timeoutMs = 30 * 60_000,
 ): Promise<RenderMp4Result> {
-  await mkdir(path.dirname(outputMp4), { recursive: true });
+  // 不自动创建父目录：无效输出路径应当原样失败（T17/T35）。
   const args = [projectPath, outputMp4, "--render"];
   if (preset) args.push("--render-preset", preset);
   const started = Date.now();

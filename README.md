@@ -84,3 +84,29 @@ workspaces/mountain-morning/      样板工作区（state.json 为权威进度�
   `kdenlive:docproperties.profile`（MLT profile 名），否则素材箱为空、项目规格回落
   720×576 PAL。
 - 渲染超时上限 30 分钟；素材下载总量上限 2 GB（`ingest` 强制检查）。
+
+## 样板交付（2026-10-02 验收）
+
+交付物（均在工作区 `workspaces/mountain-morning/`，交付清单与证据索引见
+`evidence/index.json`）：
+
+| 交付物 | 路径 |
+| --- | --- |
+| 最终视频 | `outputs/final.mp4`（48s，1920×1080@30fps，H.264/AAC） |
+| 终版剪辑工程 | `projects/final.kdenlive`（Kdenlive 26.08.1） |
+| 终版配乐工程 | `projects/score-08431593e80867a5-a5.mmp`（LMMS 1.2.2） |
+| 无损配乐 | `outputs/score-final.wav`（48.001s，44.1kHz 立体声） |
+| 粗剪预览 | `outputs/preview-0c8c2573bbeb96a1-a1.mp4` |
+| 不可变检查点 | `checkpoints/checkpoint-001/`、`checkpoint-002/` |
+| 素材来源与许可 | `evidence/asset-sources.json`（Pexels License，无署名义务） |
+
+- 验收状态：checklist 19 项中 15 项通过；C2/C4（两款软件内修改副本）与
+  C7/C14（真实反馈流程）待创作者执行，C11 的主观满意度待创作者复核。
+  逐项证据见 [spec_docs/checklist.md](spec_docs/checklist.md)。
+- 故障演练：素材缺失（T34）、导出失败（T35）、中断恢复（T36）均通过，
+  已确认版本指纹未变。
+- 继续编辑：直接用软件打开上述工程即可；助手侧修改请走
+  `review --decision changes --feedback "…"` 重开对应版本（产物自动失效与重渲染
+  由阶段机保证）。
+- 声音取舍：配乐主音量固定 42% 换取消波余量；增强段存在 3 个孤立满幅样本
+  （合计 <0.05ms，低于可闻阈值），如创作者认为可闻可在检查点提出。

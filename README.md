@@ -5,16 +5,16 @@
 工作周期的任务中保持方向，并让人随时能够查看、纠正和接手。当前以 Kdenlive 与
 LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](docs/VISION.md)。
 
-## 当前阶段：阶段 2「可复用的同类创作流程」
+## 当前阶段：阶段 4「工作区感知与主动建议」（2026-10-03 验收）
 
-阶段 1 的样板「山间清晨」已于 2026-10-02 验收，记录归档于
-[docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)。阶段 2 把流程泛化：新作品由
-**任务配置**描述（标题、主题与情绪走向、时长范围、输出规格、素材候选），
-`init --config` 据此建区；配乐/剪辑方案提交时自动校验与目标的一致性。正在用两部
-新短片验证"换素材换要求、不改代码"：`workspaces/city-nightfall/`（《城市入夜》72s）
-与 `workspaces/day-to-stars/`（《从日出到星空》144s）。分阶段路线见
-[docs/spec_docs/vision-phases.md](docs/spec_docs/vision-phases.md)；阶段 2 的
-spec/plan/task/checklist 见 [docs/spec_docs/phase-2/](docs/spec_docs/phase-2/)。
+阶段 1 的样板「山间清晨」与阶段 2 的流程泛化（任务配置建区、`city-nightfall` 与
+`day-to-stars` 两部新短片）已于 2026-10-02 验收；阶段 3 让验证可信（深度检查、
+检查点门禁与 waive）；阶段 4 让助手有感知：`monitor` 命令族在后台对照工作区
+快照，主动发现素材/工程/产物/渲染证据变化并给出建议、通知与安全的 `handoff`
+修复（见上文「工作区监测」）。分阶段路线见
+[docs/spec_docs/vision-phases.md](docs/spec_docs/vision-phases.md)；各阶段
+spec/plan/task/checklist 见 [docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)
+至 [phase-4/](docs/spec_docs/phase-4/)。
 
 ## 环境
 
@@ -86,6 +86,42 @@ npm run cli -- resume --workspace workspaces/mountain-morning
 
 `resume` 重新核对全部产物指纹，把缺失/变动写入问题记录，并重建人可读的
 `handoff.md`（当前阶段、产物清单、决定、问题、下一步）。
+
+## 工作区监测（阶段 4）
+
+监测器在后台对照工作区快照，发现素材/工程/产物/渲染证据/创作状态的变化后
+产生**主动建议**（存放于 `<ws>/.monitor/state.json`，与创作进度分库），并把
+摘要刷进 `handoff.md`。监测器只读取创作状态，从不修改 `state.json`、工程或产物。
+
+```bash
+# 前台监测一个或多个工作区（Ctrl-C / SIGTERM 优雅停止）
+npm run cli -- monitor run --workspace workspaces/mountain-morning \
+  --workspace workspaces/day-to-stars
+
+# 配置：监测范围 / 通知强度 / 缺失 handoff 自动重建（默认全范围、important、off）
+npm run cli -- monitor config --workspace workspaces/<ws> \
+  --scope assets,projects,outputs,evidence,state --notification important \
+  --auto-repair-handoff off
+
+# 建议、处理与统计
+npm run cli -- monitor suggestions --workspace workspaces/<ws> [--all]
+npm run cli -- monitor decide --workspace workspaces/<ws> --id <建议ID> --decision acknowledge|ignore
+npm run cli -- monitor metrics --workspace workspaces/<ws>
+```
+
+行为要点：
+
+- **首次基线静默**：旧工作区第一次启动只建基线、列历史问题，不发桌面通知；
+  停机期间的变化在重启首次补扫中补发现一次。
+- **通知规则**：默认 `important` 档只对**新发生**的引用失效、渲染失败、阶段阻塞
+  各尝试一次 `notify-send`（同一轮不重复）；`silent`/`all` 全关/全开。
+  桌面通知不可用时建议保留并记录失败原因。
+- **建议生命周期**：同一原因重复扫描只保留一条；确认/忽略只作用于当前轮；
+  原因消失自动转 `resolved`，再次出现开启新一轮。
+- **授权修复**：`handoff.md` 缺失时仅记录建议；`--auto-repair-handoff on` 后由
+  监测器重建并核验（非空、修订号、建议摘要），成功与否都留修复记录。
+- **多工作区隔离**：单工作区扫描/通知失败不影响其他工作区；同区二次启动被
+  运行锁拒绝，确认旧进程已死可安全重启。
 
 ## 目录
 

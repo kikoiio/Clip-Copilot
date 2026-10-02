@@ -5,16 +5,18 @@
  * 产物时长 vs 计划偏差、配乐段落边界 vs 剪辑切点对齐。接口契约见
  * docs/spec_docs/phase-3/plan.md 的「核心数据结构」「模块 A」两节。
  *
- * 本文件当前只实现纯函数与常量；ffmpeg 媒体检测与组合入口
- * （detectClipping / measureLoudness / deepVideoChecks / deepAudioChecks）
- * 由后续任务在文末预留分节处追加，勿打乱既有分节顺序。
+ * ffmpeg 媒体检测（detectClipping / measureLoudness）在文末对应分节实现；
+ * 组合入口（deepVideoChecks / deepAudioChecks）由后续任务追加，勿打乱既有分节顺序。
  *
  * 分类依据单一来源：计划声明的 fade 参数与段落结构（spec F4）；本模块除类型外
  * 不读工作区状态，检查只读产物，输出一律进 evidence/ 或临时目录。
  */
 
+import { spawn } from "node:child_process";
+
 import type { EditPlan, ScorePlan } from "../domain.ts";
 import type { TimeSegment } from "./media.ts";
+import { runFfmpeg } from "../infra/process.ts";
 
 // ───────────────────────────────────────────────────────────────────────────
 // 常量
@@ -185,12 +187,158 @@ export function checkSectionAlignment(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// 削波检测（detectClipping）：ffmpeg s16le PCM 连续满幅游程扫描——后续任务追加
+// 削波检测（detectClipping）：ffmpeg s16le PCM 连续满幅游程扫描
 // ───────────────────────────────────────────────────────────────────────────
 
+/** 削波扫描结果。 */
+export interface ClippingReport {
+  /** 最长连续满幅游程长度（样本数）。 */
+  maxConsecutive: number;
+  /** 满幅样本总数。 */
+  clippedSamples: number;
+}
+
+/** s16le 满幅判定阈值：|sample| ≥ 32767（正向满幅 32767，负向满幅 -32768）。 */
+const S16_FULLSCALE_THRESHOLD = 32767;
+
+/**
+ * 纯函数：对解码后的 s16le 样本流扫描满幅（|sample| ≥ 32767）连续游程。
+ * maxConsecutive = 最长连续满幅游程长度；clippedSamples = 满幅样本总数。
+ * 双声道交织流按样本流直接扫描，左右声道连续计数可接受，不分离声道。
+ * minConsecutive 不改变统计值——组合入口以 maxConsecutive ≥ minConsecutive
+ * 判削波（阈值 DEEP_CHECK_DEFAULTS.minConsecutiveClippedSamples），
+ * 入参保留以对齐 plan.md 的接口契约。
+ */
+export function countClippedRuns(samples: Int16Array, minConsecutive: number): ClippingReport {
+  let maxConsecutive = 0;
+  let clippedSamples = 0;
+  let run = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const sample = samples[i]!;
+    if (sample >= S16_FULLSCALE_THRESHOLD || sample <= -S16_FULLSCALE_THRESHOLD) {
+      run += 1;
+      clippedSamples += 1;
+      if (run > maxConsecutive) maxConsecutive = run;
+    } else {
+      run = 0;
+    }
+  }
+  return { maxConsecutive, clippedSamples };
+}
+
+/** 媒体分析统一超时，与 media.ts 各检测的 10 分钟一致。 */
+const MEDIA_ANALYSIS_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * 削波检测：ffmpeg 把音频解码为 48kHz 双声道 s16le PCM（-vn 丢视频），
+ * 逐样本扫描满幅游程。不能复用 runProcess——其 stdout 按 utf8 文本捕获，
+ * 二进制 PCM 会损坏；这里用 spawn 以 Buffer 块累积 stdout，结束再转 Int16Array。
+ * 解码失败 / 超时 / 无音频流一律抛错，不返回部分结果。
+ */
+export async function detectClipping(
+  file: string,
+  minConsecutive: number,
+): Promise<ClippingReport> {
+  const args = ["-v", "error", "-i", file, "-vn", "-ac", "2", "-ar", "48000", "-f", "s16le", "-"];
+  const pcm = await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 10_000).unref();
+    }, MEDIA_ANALYSIS_TIMEOUT_MS);
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`${message}${stderr ? `\nstderr: ${stderr.slice(-500)}` : ""}`));
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (err) => fail(`ffmpeg 启动失败：${String(err)}`));
+    child.on("close", (code) => {
+      if (settled) return;
+      if (timedOut) {
+        fail(`detectClipping 超时（>${MEDIA_ANALYSIS_TIMEOUT_MS / 1000}s）`);
+        return;
+      }
+      if (code !== 0) {
+        fail(`detectClipping 失败：退出码 ${code}`);
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks));
+    });
+  });
+  // 尾部不足 2 字节的残缺字节丢弃；Buffer 底层偏移不对齐时回退逐样本读取。
+  const sampleCount = Math.floor(pcm.byteLength / 2);
+  const samples =
+    pcm.byteOffset % 2 === 0
+      ? new Int16Array(pcm.buffer, pcm.byteOffset, sampleCount)
+      : Int16Array.from({ length: sampleCount }, (_, i) => pcm.readInt16LE(i * 2));
+  return countClippedRuns(samples, minConsecutive);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
-// 响度检测（measureLoudness）：ffmpeg ebur128 统计解析——后续任务追加
+// 响度检测（measureLoudness）：ffmpeg ebur128 统计解析
 // ───────────────────────────────────────────────────────────────────────────
+
+/** EBU R128 响度统计（ITU-R BS.1770）。 */
+export interface LoudnessReport {
+  /** integrated loudness（LUFS）。 */
+  integratedLufs: number;
+  /** true peak（dBFS）。 */
+  truePeakDb: number;
+  /** loudness range（LU）。 */
+  lra: number;
+}
+
+/**
+ * 响度测量：ffmpeg ebur128 过滤器（peak=true 含 true peak）。
+ * 过程行逐帧输出非常吵，Summary 块固定在结尾；runProcess 的 stderr 保留头尾
+ * （超长时中段省略）但结尾不丢，故取 stderr 最后一次出现的 Summary 块解析，
+ * 避免误读过程行里的 I / LRA 数值。任一值解析不到即抛错，不返回部分结果。
+ */
+export async function measureLoudness(file: string): Promise<LoudnessReport> {
+  const result = await runFfmpeg(
+    ["-v", "info", "-i", file, "-filter_complex", "ebur128=peak=true", "-f", "null", "-"],
+    { timeoutMs: MEDIA_ANALYSIS_TIMEOUT_MS },
+  );
+  if (result.timedOut) {
+    throw new Error(`measureLoudness 超时（>${MEDIA_ANALYSIS_TIMEOUT_MS / 1000}s）：${file}`);
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `measureLoudness 失败：退出码 ${result.exitCode}\nstderr: ${result.stderr.slice(-500)}`,
+    );
+  }
+  const summaryStart = result.stderr.lastIndexOf("Summary:");
+  if (summaryStart < 0) {
+    throw new Error(`ebur128 未输出 Summary 块：${file}\nstderr: ${result.stderr.slice(-500)}`);
+  }
+  const summary = result.stderr.slice(summaryStart);
+  const i = /I:\s+(-?[\d.]+)\s+LUFS/.exec(summary);
+  const peak = /Peak:\s+(-?[\d.]+)\s+dBFS/.exec(summary);
+  const lra = /LRA:\s+(-?[\d.]+)\s+LU/.exec(summary);
+  if (!i || !peak || !lra) {
+    throw new Error(`ebur128 Summary 解析失败（缺 I/Peak/LRA）：${file}\n${summary.slice(-500)}`);
+  }
+  return {
+    integratedLufs: Number(i[1]),
+    truePeakDb: Number(peak[1]),
+    lra: Number(lra[1]),
+  };
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // 组合入口（deepVideoChecks / deepAudioChecks）：渲染流程与 verify 共用——后续任务追加

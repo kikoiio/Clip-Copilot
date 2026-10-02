@@ -57,11 +57,18 @@ export interface ClassifiedSegments {
 
 /** 淡变边界比较的浮点容差：1ms。 */
 const FADE_EDGE_TOLERANCE_SEC = 0.001;
+/**
+ * 淡变区间外缘的测量容差（0.15s ≈ 4.5 帧 @30fps）：编码压缩会让淡变结束后的
+ * 暗帧滞留 1-2 帧仍低于 blackdetect 阈值（实测城市入夜 2s 淡入检出 2.03s 黑场），
+ * 淡入淡出声明范围内的检出段略超范围的部分视为「有意」，否则计划内淡入会被误报。
+ * 超出该容差仍判意外，真实缺陷不受影响。
+ */
+const FADE_OVERSHOOT_SEC = 0.15;
 
 /**
  * 统一分类规则（spec F4）：候选段完全落在头淡入 [0, fadeInSec] 或
  * 尾淡出 [totalSec − fadeOutSec, totalSec] 内 = 有意，其余 = 意外。
- * 端点比较带 1ms 浮点容差（如 startSec ≥ −0.001 且 endSec ≤ 区间端 + 0.001）；
+ * 端点比较带 1ms 浮点容差，区间外缘另放宽 FADE_OVERSHOOT_SEC 测量容差；
  * fade 长度 ≤ 0 视为对应区间不存在（fadeOutSec=0 时尾部段一律意外，fadeInSec 同理）。
  * 黑帧与静音共用本实现，避免两套判定漂移。
  */
@@ -71,9 +78,9 @@ function classifyByFade(
   fadeOutSec: number,
   totalSec: number,
 ): ClassifiedSegments {
-  // 长度 ≤ 0 的淡变区间视为不存在。
-  const headEndSec = fadeInSec > 0 ? fadeInSec : null;
-  const tailStartSec = fadeOutSec > 0 ? totalSec - fadeOutSec : null;
+  // 长度 ≤ 0 的淡变区间视为不存在；外缘按测量容差放宽。
+  const headEndSec = fadeInSec > 0 ? fadeInSec + FADE_OVERSHOOT_SEC : null;
+  const tailStartSec = fadeOutSec > 0 ? totalSec - fadeOutSec - FADE_OVERSHOOT_SEC : null;
   const intentional: TimeSegment[] = [];
   const unexpected: TimeSegment[] = [];
   for (const segment of segments) {

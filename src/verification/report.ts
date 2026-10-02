@@ -4,6 +4,7 @@
  * 按 artifactId 取最新一份只看文件名时间戳，不依赖 mtime。
  */
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { CheckResult } from "../domain.ts";
 
@@ -113,4 +114,37 @@ export async function latestCheckReport(
     // 损坏的报告按「无报告」处理，不阻塞调用方（门禁另做提示）。
     return null;
   }
+}
+
+/**
+ * 取目录中每个产物的最新一份报告（handoff 检查摘要与 status 行用，同步实现——
+ * 调用方 printStateSummary 为同步函数）：文件名时间戳最大者胜出，损坏报告跳过；
+ * 目录不存在返回空数组。
+ */
+export function latestReportsSync(evidenceDir: string): DeepCheckReport[] {
+  let names: string[];
+  try {
+    names = readdirSync(evidenceDir).filter((name) => name.endsWith(FILE_SUFFIX));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const best = new Map<string, { file: string; ts: number }>();
+  for (const name of names) {
+    const parsed = parseReportFileName(name);
+    if (!parsed) continue;
+    const existing = best.get(parsed.artifactId);
+    if (!existing || parsed.ts > existing.ts) {
+      best.set(parsed.artifactId, { file: path.join(evidenceDir, name), ts: parsed.ts });
+    }
+  }
+  const reports: DeepCheckReport[] = [];
+  for (const { file } of [...best.values()].sort((a, b) => a.ts - b.ts)) {
+    try {
+      reports.push(JSON.parse(readFileSync(file, "utf8")) as DeepCheckReport);
+    } catch {
+      // 损坏报告跳过，不影响其余产物的摘要。
+    }
+  }
+  return reports;
 }

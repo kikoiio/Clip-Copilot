@@ -1,4 +1,5 @@
-import { mkdir, readFile, cp, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, cp, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,8 +44,22 @@ import {
   probeMedia,
 } from "../verification/media.ts";
 import { checkProjectReferences } from "../verification/native.ts";
-import { deepAudioChecks, deepVideoChecks } from "../verification/deep.ts";
-import { buildReport, writeCheckReport, type DeepCheckReport } from "../verification/report.ts";
+import {
+  applyWaivers,
+  deepAudioChecks,
+  deepVideoChecks,
+} from "../verification/deep.ts";
+import {
+  headlessValidateKdenliveProject,
+  headlessValidateLmmsProject,
+} from "../verification/headless.ts";
+import {
+  buildReport,
+  latestReportsSync,
+  summarize,
+  writeCheckReport,
+  type DeepCheckReport,
+} from "../verification/report.ts";
 import {
   WorkspaceError,
   auditArtifacts,
@@ -175,6 +190,29 @@ export async function writeHandoff(loaded: Loaded): Promise<string> {
   for (const i of state.issues) {
     lines.push(`- ${i.at}【${i.kind}】证据：${i.evidence}；处理：${i.action}；结果：${i.result}`);
   }
+  // 检查摘要（spec F5）：固定进入 handoff，宣布可交付之前机器检查过的证据一目了然。
+  const checkSummary = collectCheckSummarySync(loaded);
+  lines.push("", `## 检查摘要（深度检查）`, "");
+  if (checkSummary.reportCount === 0) {
+    lines.push("（尚无深度检查报告；渲染或 verify 后生成。）", "");
+  } else {
+    lines.push(
+      `- 报告 ${checkSummary.reportCount} 份：pass ${checkSummary.pass} / warn ${checkSummary.warn} / fail ${checkSummary.fail}（未豁免） / 待人工 ${checkSummary.needsHuman}`,
+    );
+    if (checkSummary.unwaivedFails.length > 0) {
+      lines.push(`- 未豁免硬伤（须修复重渲，或用 waive 记录豁免原因）：`);
+      for (const f of checkSummary.unwaivedFails) {
+        lines.push(`  - ${f.artifactId} ${f.id}: ${f.evidence}`);
+      }
+    }
+    if (checkSummary.needsHumanItems.length > 0) {
+      lines.push(`- 待人工（必须人来）：`);
+      for (const item of checkSummary.needsHumanItems) {
+        lines.push(`  - ${item.artifactId} ${item.id}: ${item.evidence}`);
+      }
+    }
+    lines.push("");
+  }
   lines.push("", `## 恢复说明`, "");
   lines.push(
     `在仓库根目录运行 \`npm run cli -- resume --workspace ${loaded.dir}\` 即可核对指纹并重建本文件；进度以 state.json 为唯一权威。`,
@@ -199,6 +237,12 @@ function printStateSummary(loaded: Loaded): void {
     console.log(`情绪走向: ${state.goal.moodArc.map((n) => `${n.name}(${n.energy})`).join(" → ")}`);
   }
   console.log(`素材: ${state.assets.length} 段 / 产物: ${state.artifacts.length} 件 / 检查点: ${state.checkpoints.length} 个`);
+  const checkSummary = collectCheckSummarySync(loaded);
+  if (checkSummary.reportCount > 0) {
+    console.log(
+      `深度检查: pass ${checkSummary.pass} / warn ${checkSummary.warn} / fail ${checkSummary.fail}（未豁免） / 待人工 ${checkSummary.needsHuman}（报告 ${checkSummary.reportCount} 份）`,
+    );
+  }
   console.log(`下一步: ${state.nextAction}`);
 }
 
@@ -383,6 +427,44 @@ async function collectToolVersions(): Promise<Record<string, string>> {
  * 入口自身抛异常转成一条 fail 结果，绝不因深度检查异常让渲染崩溃或静默跳过。
  * 组装报告落盘 evidence/ 并在控制台打印摘要一行；返回报告供调用方做 fail/warn 处置。
  */
+/**
+ * 检查摘要汇总（handoff「检查摘要」小节与 status 计数行共用）：
+ * 取 evidence 下每产物最新报告，结果先过当前豁免再计数——豁免后 fail 降级为
+ * warn，因此 fail 计数即「未豁免硬伤」，warn 含已豁免与响度类告警。
+ */
+function collectCheckSummarySync(loaded: Loaded): {
+  reportCount: number;
+  pass: number;
+  warn: number;
+  fail: number;
+  needsHuman: number;
+  unwaivedFails: { artifactId: string; id: string; evidence: string }[];
+  needsHumanItems: { artifactId: string; id: string; evidence: string }[];
+} {
+  const reports = latestReportsSync(path.join(loaded.dir, "evidence"));
+  const summary = { reportCount: reports.length, pass: 0, warn: 0, fail: 0, needsHuman: 0 };
+  const unwaivedFails: { artifactId: string; id: string; evidence: string }[] = [];
+  const needsHumanItems: { artifactId: string; id: string; evidence: string }[] = [];
+  const waivers = waiversOf(loaded.state);
+  for (const report of reports) {
+    const effective = applyWaivers(report.results, waivers, report.targetArtifactId);
+    const counted = summarize(effective);
+    summary.pass += counted.pass;
+    summary.warn += counted.warn;
+    summary.fail += counted.fail;
+    summary.needsHuman += counted.needsHuman;
+    const artifactId = report.targetArtifactId ?? "unknown";
+    for (const item of effective) {
+      if (item.status === "fail") {
+        unwaivedFails.push({ artifactId, id: item.id, evidence: item.evidence });
+      } else if (item.status === "needs_human" || item.status === "needs_observation") {
+        needsHumanItems.push({ artifactId, id: item.id, evidence: item.evidence });
+      }
+    }
+  }
+  return { ...summary, unwaivedFails, needsHumanItems };
+}
+
 async function runRenderDeepChecks(
   loaded: Loaded,
   target: { targetArtifactId: string; targetFile: string; targetKind: string },
@@ -684,9 +766,26 @@ export async function cmdVerify(args: string[]): Promise<number> {
   const dir = requireWorkspaceArg(args);
   const loaded = await loadWorkspace(dir);
   const results: CheckResult[] = [];
+  const evidenceDir = path.join(loaded.dir, "evidence");
+  const waivers = waiversOf(loaded.state);
   for (const asset of loaded.state.assets) {
     results.push(...(await checkAsset(loaded.dir, asset)));
   }
+  /** 本次 verify 生成的深度检查报告，供问题登记与汇总。 */
+  const deepReports: DeepCheckReport[] = [];
+  const runDeepOn = async (
+    artifact: ArtifactRecord,
+    checks: () => Promise<CheckResult[]>,
+  ): Promise<void> => {
+    const report = buildReport(
+      { targetArtifactId: artifact.id, targetFile: artifact.path, targetKind: artifact.kind },
+      await checks(),
+      await collectToolVersions(),
+    );
+    await writeCheckReport(evidenceDir, report);
+    deepReports.push(report);
+    results.push(...report.results);
+  };
   for (const artifact of loaded.state.artifacts) {
     if (artifact.kind === "lmms_project" || artifact.kind === "kdenlive_project") {
       // 已被更高适配器版本取代的历史工程（draft 且不带当前版本标记）不参与引用检查：
@@ -696,7 +795,7 @@ export async function cmdVerify(args: string[]): Promise<number> {
         results.push({
           id: `project:superseded:${artifact.id}`,
           status: "pass",
-          evidence: `历史工程 ${artifact.path}（旧适配器版本，已失效），跳过引用检查；文件保留作历史记录`,
+          evidence: `历史工程 ${artifact.path}（旧适配器版本，已失效），跳过引用检查与无界面验证；文件保留作历史记录`,
         });
         continue;
       }
@@ -710,20 +809,95 @@ export async function cmdVerify(args: string[]): Promise<number> {
           hasAudio: true,
         })),
       );
+      // 深度检查（spec F1/F2）：历史产物也查（ffmpeg 分析成本低）；计划缺失降级 needs_human（N1）。
+      const file = workspacePath(loaded.dir, artifact.path);
+      if (artifact.kind.startsWith("audio")) {
+        await runDeepOn(artifact, () =>
+          loaded.state.scorePlan
+            ? deepAudioChecks(file, loaded.state.scorePlan, waivers, artifact.id)
+            : Promise.resolve([{
+                id: "deep:audio",
+                status: "needs_human" as const,
+                evidence: `产物 ${artifact.id}：缺少配乐方案数据，无法自动对照（必须人来或补全计划）`,
+              }]),
+        );
+      } else {
+        await runDeepOn(artifact, () =>
+          loaded.state.editPlan
+            ? deepVideoChecks(file, loaded.state.editPlan, loaded.state.scorePlan, waivers, artifact.id)
+            : Promise.resolve([{
+                id: "deep:video",
+                status: "needs_human" as const,
+                evidence: `产物 ${artifact.id}：缺少剪辑方案数据，无法自动对照（必须人来或补全计划）`,
+              }]),
+        );
+      }
     }
+  }
+  // 无界面工程有效性验证（spec F3）：每类工程的最新产物（draft 或 confirmed）。
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "verify-headless-"));
+  try {
+    for (const kind of ["lmms_project", "kdenlive_project"] as const) {
+      const latest = latestArtifact(loaded.state, kind);
+      if (!latest) continue;
+      const currentRev = latest.basedOn.some((b) => b.endsWith(`:a${KDENLIVE_ADAPTER_REV}`) || b.endsWith(`:a${SCORE_ADAPTER_REV}`));
+      if (latest.status !== "confirmed" && !currentRev) {
+        results.push({
+          id: `headless:skipped:${latest.id}`,
+          status: "pass",
+          evidence: `历史工程 ${latest.path}（旧适配器版本，已失效），跳过无界面验证`,
+        });
+        continue;
+      }
+      const file = workspacePath(loaded.dir, latest.path);
+      const check = kind === "lmms_project"
+        ? await headlessValidateLmmsProject(file, tmpDir, evidenceDir)
+        : await headlessValidateKdenliveProject(file, tmpDir, evidenceDir);
+      await runDeepOn(latest, () => Promise.resolve([check]));
+    }
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
   }
   results.push(...(await auditArtifacts(loaded)).map((p) => ({
     id: `artifact:${p.artifact.id}`,
     status: "fail" as const,
     evidence: p.problem,
   })));
-  const file = path.join(loaded.dir, "evidence", `verify-${Date.now()}.json`);
+  // fail/warn 逐条登记问题记录；带 [产物ID/检查项] 前缀去重，避免重复 verify 反复追加。
+  let issuesAdded = false;
+  for (const report of deepReports) {
+    for (const item of report.results) {
+      if (item.status !== "fail" && item.status !== "warn") continue;
+      const kind = item.status === "fail"
+        ? (item.id.startsWith("headless:") ? "headless_fail" : "deep_check_fail")
+        : "deep_check_warn";
+      const marker = `[${report.targetArtifactId ?? "unknown"}/${item.id}] `;
+      const duplicate = loaded.state.issues.some((i) => i.kind === kind && i.evidence.startsWith(marker));
+      if (!duplicate) {
+        addIssue(
+          loaded,
+          kind,
+          `${marker}${item.id}: ${item.evidence}`,
+          item.status === "fail" ? "修复重渲，或用 waive 记录豁免原因" : "记录告警，不阻塞",
+          item.status === "fail" ? "阻塞推进直至修复或豁免" : "渲染/verify 继续",
+        );
+        issuesAdded = true;
+      }
+    }
+  }
+  if (issuesAdded) {
+    await persist(loaded);
+    await writeHandoff(loaded);
+  }
+  const file = path.join(evidenceDir, `verify-${Date.now()}.json`);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(results, null, 2), "utf8");
   const failed = results.filter((r) => r.status === "fail");
+  const warned = results.filter((r) => r.status === "warn");
   const pending = results.filter((r) => r.status === "needs_observation" || r.status === "needs_human");
-  console.log(`检查 ${results.length} 项：通过 ${results.length - failed.length - pending.length}，失败 ${failed.length}，待人工 ${pending.length}。证据：${file}`);
+  console.log(`检查 ${results.length} 项：通过 ${results.length - failed.length - pending.length}，失败 ${failed.length}，告警 ${warned.length}，待人工 ${pending.length}。证据：${file}`);
   for (const f of failed) console.log(`  [失败] ${f.id}: ${f.evidence}`);
+  for (const w of warned) console.log(`  [告警] ${w.id}: ${w.evidence}`);
   for (const p of pending) console.log(`  [待人工] ${p.id}: ${p.evidence}`);
   return failed.length > 0 ? 1 : 0;
 }

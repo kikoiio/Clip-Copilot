@@ -83,13 +83,13 @@ export async function writeCheckReport(evidenceDir: string, report: DeepCheckRep
 }
 
 /**
- * 取某产物最新一份检查报告：按文件名时间戳取最大，不依赖 mtime。
+ * 取某产物最新一份检查报告及其文件路径（checkpoint 门禁需要路径做冻结副本）。
  * 目录不存在、无匹配文件或最新文件损坏（JSON 解析失败）一律返回 null，不抛异常。
  */
-export async function latestCheckReport(
+export async function latestCheckReportWithFile(
   evidenceDir: string,
   artifactId: string,
-): Promise<DeepCheckReport | null> {
+): Promise<{ report: DeepCheckReport; file: string } | null> {
   let best: { file: string; ts: number } | null = null;
   try {
     const entries = await readdir(evidenceDir, { withFileTypes: true });
@@ -109,11 +109,19 @@ export async function latestCheckReport(
   if (!best) return null;
   try {
     const text = await readFile(best.file, "utf8");
-    return JSON.parse(text) as DeepCheckReport;
+    return { report: JSON.parse(text) as DeepCheckReport, file: best.file };
   } catch {
     // 损坏的报告按「无报告」处理，不阻塞调用方（门禁另做提示）。
     return null;
   }
+}
+
+/** 取某产物最新一份检查报告（只要内容不要路径）。 */
+export async function latestCheckReport(
+  evidenceDir: string,
+  artifactId: string,
+): Promise<DeepCheckReport | null> {
+  return (await latestCheckReportWithFile(evidenceDir, artifactId))?.report ?? null;
 }
 
 /**

@@ -16,10 +16,15 @@ const HELP = `山间清晨短片工作流
   score       --workspace <目录> [--plan <JSON>]      保存配乐方案；缺省时打印当前方案
   edit        --workspace <目录> [--plan <JSON>]      保存剪辑方案；缺省时打印当前方案
   render      --workspace <目录> score|video|final    生成工程并导出当前阶段产物
-  verify      --workspace <目录>                      运行可自动化的全部检查
-  checkpoint  --workspace <目录> --summary <文本>      提交当前阶段检查点（不可变副本）
+  verify      --workspace <目录>                      运行可自动化的全部检查（含深度检查与
+                                                        无界面工程验证；硬伤退出码非 0）
+  checkpoint  --workspace <目录> --summary <文本>      提交当前阶段检查点（不可变副本；
+                                                        产物带未豁免硬伤时拒绝提交）
   review      --workspace <目录> --decision approve|changes [--feedback <文本>]
                                                       记录创作者对当前检查点的意见
+  waive       --workspace <目录> --check <检查项ID> [--artifact <产物ID>] --reason <文本>
+                                                      豁免一条机器检查结论（原因必填、进决定
+                                                      记录；豁免后该项在门禁中降级为告警）
   reopen      --workspace <目录> [--reason <文本>]    重开已交付（done）工作区的视频版本
                                                       （产物失效并回到 video_draft，用于适配器
                                                       升级后重新生成工程等场景）

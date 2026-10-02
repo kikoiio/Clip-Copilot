@@ -13,6 +13,7 @@ import {
   type IssueRecord,
   type Phase,
   type ScorePlan,
+  type WaiverRecord,
   type WorkspaceState,
   artifactById,
   isArtifactStale,
@@ -55,6 +56,7 @@ import {
 } from "../verification/headless.ts";
 import {
   buildReport,
+  latestCheckReportWithFile,
   latestReportsSync,
   summarize,
   writeCheckReport,
@@ -922,11 +924,33 @@ export async function cmdCheckpoint(args: string[]): Promise<number> {
     .map((k) => latestArtifact(loaded.state, k)?.id)
     .filter((id): id is string => id !== undefined);
   if (artifactIds.length === 0) throw new WorkspaceError("没有可提交的产物");
+  // 门禁（spec F6/AC5）：被引用产物存在未豁免深度检查硬伤时拒绝提交。
+  // 无报告的产物（verify 未跑过）不阻塞——渲染闸门与 verify 兜底；有报告则按当前豁免重新评估。
+  const evidenceDir = path.join(loaded.dir, "evidence");
+  const reportPaths: string[] = [];
+  const blocking: string[] = [];
+  for (const id of artifactIds) {
+    const entry = await latestCheckReportWithFile(evidenceDir, id);
+    if (!entry) continue;
+    const effective = applyWaivers(entry.report.results, waiversOf(loaded.state), id);
+    const fails = effective.filter((r) => r.status === "fail");
+    if (fails.length > 0) {
+      blocking.push(...fails.map((f) => `${id} ${f.id}: ${f.evidence.slice(0, 200)}`));
+    } else {
+      reportPaths.push(entry.file);
+    }
+  }
+  if (blocking.length > 0) {
+    throw new WorkspaceError(
+      `检查点被深度检查硬伤阻断（修复重渲，或用 waive --check <检查项ID> --reason <原因> 豁免）：\n  - ${blocking.join("\n  - ")}`,
+    );
+  }
   const { checkpoint, directory } = await createCheckpoint(loaded, {
     phase,
     artifactIds,
     summary,
     nextAction: "等待创作者审阅（review --decision approve|changes）。",
+    reportPaths,
   });
   loaded.state.nextAction = checkpoint.nextAction;
   addDecision(loaded, `提交检查点 ${checkpoint.id}`, summary, `产物已冻结到 ${directory}`);
@@ -992,6 +1016,47 @@ export async function cmdReview(args: string[]): Promise<number> {
   await persist(loaded);
   await writeHandoff(loaded);
   console.log(`检查点 ${checkpoint.id} 已记录：${decision}${feedback ? `（${feedback}）` : ""}`);
+  printStateSummary(loaded);
+  return 0;
+}
+
+/**
+ * 豁免一条机器检查结论（spec F6）：记录原因后该检查项在门禁评估中降级为 warn。
+ * 豁免针对机器检查项，与 review 的创作意见流分离；原因必填并进决定记录。
+ */
+export async function cmdWaive(args: string[]): Promise<number> {
+  const dir = requireWorkspaceArg(args);
+  const checkId = getOption(args, "--check");
+  const artifactId = getOption(args, "--artifact");
+  const reason = getOption(args, "--reason") ?? "";
+  if (!checkId) {
+    throw new WorkspaceError("缺少 --check 参数（被豁免的检查项 ID，如 deep:video:black）");
+  }
+  if (reason.trim() === "") {
+    throw new WorkspaceError("缺少 --reason 参数：豁免必须说明原因（留痕要求，spec N3）");
+  }
+  const loaded = await loadWorkspace(dir);
+  if (artifactId && !artifactById(loaded.state, artifactId)) {
+    throw new WorkspaceError(`产物 ${artifactId} 不存在`);
+  }
+  const record: WaiverRecord = {
+    at: new Date().toISOString(),
+    checkId,
+    reason,
+    ...(artifactId !== undefined ? { artifactId } : {}),
+  };
+  (loaded.state.waivers ??= []).push(record);
+  addDecision(
+    loaded,
+    "豁免机器检查项",
+    `${checkId}${artifactId ? `（产物 ${artifactId}）` : ""}：${reason}`,
+    "该检查项在门禁评估中降级为 warn，不再阻塞",
+  );
+  await persist(loaded);
+  await writeHandoff(loaded);
+  console.log(
+    `已豁免 ${checkId}${artifactId ? `（产物 ${artifactId}）` : ""}：${reason}`,
+  );
   printStateSummary(loaded);
   return 0;
 }
@@ -1097,4 +1162,5 @@ export const commands: Record<string, (args: string[]) => Promise<number>> = {
   reopen: cmdReopen,
   resume: cmdResume,
   status: cmdStatus,
+  waive: cmdWaive,
 };

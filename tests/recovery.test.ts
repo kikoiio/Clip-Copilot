@@ -514,3 +514,30 @@ test("T6/C7：目标规格与模板不一致时在生成工程前报错且不产
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/* ---------- 阶段 2：多工作区隔离 ---------- */
+
+test("T8：双工作区互不干扰——各自状态独立，推进其一不影响另一者", async () => {
+  const dirA = await tempWorkspace();
+  const dirB = await tempWorkspace();
+  try {
+    await cmdInit(["--workspace", dirA, "--config", await writeSampleConfig(dirA, "task-a.json")]);
+    await cmdInit(["--workspace", dirB, "--config", await writeSampleConfig(dirB, "task-b.json")]);
+    const loadedA = await loadState(dirA);
+    const loadedB = await loadState(dirB);
+    assert.notEqual(loadedA.state.taskConfigPath, loadedB.state.taskConfigPath);
+    const revisionB = loadedB.state.revision;
+    const artifactsB = loadedB.state.artifacts.length;
+    // 推进 A：写入配乐方案并推进 revision
+    loadedA.state.nextAction = "A 继续推进";
+    await saveState(dirA, loadedA.state, loadedA.state.revision);
+    // B 的 revision、产物与磁盘状态不受影响
+    const reloadedB = await loadState(dirB);
+    assert.equal(reloadedB.state.revision, revisionB);
+    assert.equal(reloadedB.state.artifacts.length, artifactsB);
+    assert.equal(reloadedB.state.nextAction, loadedB.state.nextAction);
+  } finally {
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});

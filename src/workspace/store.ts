@@ -7,6 +7,7 @@ import {
   migrateStateV1,
   type ArtifactRecord,
   type CheckpointRecord,
+  type Goal,
   type WorkspaceState,
 } from "../domain.ts";
 
@@ -127,18 +128,11 @@ export async function saveState(
   return next;
 }
 
-export function emptyState(title: string): WorkspaceState {
+export function emptyState(goal: Goal): WorkspaceState {
   return {
     schemaVersion: SCHEMA_VERSION,
     revision: 0,
-    goal: {
-      title,
-      theme: "（未配置：等待任务配置接入）",
-      minFrames: 900,
-      maxFrames: 1800,
-      outputSpec: { width: 1920, height: 1080, fps: 30 },
-      moodArc: [],
-    },
+    goal,
     phase: "assets",
     assets: [],
     artifacts: [],

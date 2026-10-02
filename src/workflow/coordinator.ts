@@ -19,6 +19,7 @@ import {
   scoreDurationMs,
 } from "../domain.ts";
 import { ingestAsset, checkAsset } from "../assets/catalog.ts";
+import { loadTaskConfig, taskConfigToGoal } from "./taskConfig.ts";
 import { SCORE_ADAPTER_REV, renderScoreWav, scorePlanFingerprint, writeScoreProject } from "../score/lmms.ts";
 import { editPlanFingerprint, renderVideoMp4, writeEditProject } from "../video/kdenlive.ts";
 import { saveRunEvidence } from "../infra/process.ts";
@@ -167,24 +168,30 @@ function printStateSummary(loaded: Loaded): void {
 
 export async function cmdInit(args: string[]): Promise<number> {
   const dir = requireWorkspaceArg(args);
+  const configFile = getOption(args, "--config");
+  if (!configFile) {
+    throw new WorkspaceError("缺少 --config 参数：新工作区必须依据任务配置创建（见 --help）");
+  }
+  const config = await loadTaskConfig(configFile);
   if (await stateExists(dir)) {
     throw new WorkspaceError(`工作区 ${dir} 已初始化，拒绝覆盖（如需继续请使用 resume 或 status）`);
   }
   for (const sub of WORKSPACE_SUBDIRS) {
     await mkdir(path.join(dir, sub), { recursive: true });
   }
-  const state = emptyState("山间清晨：30–60 秒短片，LMMS 配乐 + Kdenlive 剪辑");
+  const state = emptyState(taskConfigToGoal(config));
+  state.nextAction = `登记素材（ingest）：任务配置列出 ${config.assets.length} 个候选，见 handoff；登记清单外的素材需附替换原因。`;
   const loaded: Loaded = { dir, state };
   await saveState(dir, state, 0);
   addDecision(
     loaded,
     "初始化工作区",
-    "第一轮样板：固定 1920×1080、30fps、900–1800 帧目标",
+    `依据任务配置 ${path.resolve(configFile)}：${state.goal.outputSpec.width}×${state.goal.outputSpec.height}@${state.goal.outputSpec.fps}、${state.goal.minFrames}–${state.goal.maxFrames} 帧`,
     "进入素材阶段",
   );
   await persist(loaded);
   await writeHandoff(loaded);
-  console.log(`工作区已初始化：${path.resolve(dir)}`);
+  console.log(`工作区已初始化：${path.resolve(dir)}（任务配置：${path.resolve(configFile)}）`);
   printStateSummary({ dir, state: (await loadState(dir)).state });
   return 0;
 }

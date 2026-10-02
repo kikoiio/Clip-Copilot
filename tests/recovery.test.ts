@@ -23,12 +23,25 @@ import {
   registerArtifact,
   saveState,
   sha256File,
+  stateExists,
 } from "../src/workspace/store.ts";
 import { cmdCheckpoint, cmdEdit, cmdIngest, cmdRender, cmdReview, cmdResume, cmdScore, cmdStatus, cmdInit } from "../src/workflow/coordinator.ts";
 import { loadTaskConfig, taskConfigToGoal, validateTaskConfig, type TaskConfig } from "../src/workflow/taskConfig.ts";
+import type { Goal } from "../src/domain.ts";
 
 async function tempWorkspace(): Promise<string> {
   return await mkdtemp(path.join(tmpdir(), "mm-test-"));
+}
+
+function sampleGoal(): Goal {
+  return taskConfigToGoal(sampleTaskConfig());
+}
+
+/** 把样板任务配置写入目录并返回路径（供 cmdInit --config 使用）。 */
+async function writeSampleConfig(dir: string, name = "task.json"): Promise<string> {
+  const file = path.join(dir, name);
+  await writeFile(file, JSON.stringify(sampleTaskConfig()), "utf8");
+  return file;
 }
 
 function sampleScorePlan(): ScorePlan {
@@ -88,7 +101,7 @@ test("T7：越界片长与时间线空洞被拒绝", () => {
 });
 
 test("T7：引用不存在素材或未确认配乐的计划被拒绝", () => {
-  const state = emptyState("t");
+  const state = emptyState(sampleGoal());
   const assets = [{
     id: "asset-001", sourceUrl: "s", licenseUrl: "l", licenseCheckedAt: "2026-10-01",
     localPath: "assets/a.mp4", sha256: "x", bytes: 1,
@@ -112,7 +125,7 @@ test("T7：配乐方案校验（分段不连续、音符越界）", () => {
 test("T8：状态原子读写、旧版本写入被拒、损坏文件可诊断", async () => {
   const dir = await tempWorkspace();
   try {
-    const state = emptyState("测试");
+    const state = emptyState(sampleGoal());
     await saveState(dir, state, 0);
     const loaded = await loadState(dir);
     assert.equal(loaded.state.revision, 1);
@@ -136,7 +149,7 @@ test("T8：状态原子读写、旧版本写入被拒、损坏文件可诊断", 
 test("T9：检查点不可变、重复提交被拒、指纹篡改被审计发现", async () => {
   const dir = await tempWorkspace();
   try {
-    const state = emptyState("测试");
+    const state = emptyState(sampleGoal());
     state.phase = "score_review";
     const file = path.join(dir, "outputs", "score.wav");
     await mkdir(path.dirname(file), { recursive: true });
@@ -183,7 +196,7 @@ test("T21/T22：协调器阶段推进、重复调用保护与反馈失效", asyn
   try {
     // 无法在未初始化工作区上执行 render
     await assert.rejects(() => cmdRender(["--workspace", dir, "score"]), WorkspaceError);
-    await cmdInit(["--workspace", dir]);
+    await cmdInit(["--workspace", dir, "--config", await writeSampleConfig(dir)]);
     await cmdStatus(["--workspace", dir]);
     // 制造一段假素材文件并登记（绕过 ffprobe：直接写入状态）
     const stateFile = path.join(dir, "state.json");
@@ -227,7 +240,7 @@ test("T21/T22：协调器阶段推进、重复调用保护与反馈失效", asyn
 test("T23：resume 在删除依赖文件后指出问题", async () => {
   const dir = await tempWorkspace();
   try {
-    await cmdInit(["--workspace", dir]);
+    await cmdInit(["--workspace", dir, "--config", await writeSampleConfig(dir)]);
     const loaded = await loadState(dir);
     const file = path.join(dir, "assets", "ghost.mp4");
     await mkdir(path.dirname(file), { recursive: true });
@@ -360,6 +373,42 @@ test("T3：v1 goal 缺字段时报错而非静默迁移，未知版本仍被拒"
     await assert.rejects(() => loadState(dir), /goal 字段不完整/);
     await writeFile(path.join(dir, "state.json"), JSON.stringify({ schemaVersion: 99 }), "utf8");
     await assert.rejects(() => loadState(dir), /schemaVersion/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/* ---------- 阶段 2：初始化接配置 ---------- */
+
+test("T4：init 依据任务配置创建工作区，目标写入状态", async () => {
+  const dir = await tempWorkspace();
+  try {
+    const config = await writeSampleConfig(dir);
+    await cmdInit(["--workspace", dir, "--config", config]);
+    const loaded = await loadState(dir);
+    assert.equal(loaded.state.goal.title, "测试样板");
+    assert.equal(loaded.state.goal.theme, "黄昏海岸，从宁静到涌动");
+    assert.deepEqual(loaded.state.goal.outputSpec, { width: 1920, height: 1080, fps: 30 });
+    assert.equal(loaded.state.goal.minFrames, 900);
+    assert.equal(loaded.state.goal.maxFrames, 1800);
+    assert.equal(loaded.state.goal.moodArc.length, 2);
+    assert.equal(loaded.state.phase, "assets");
+    assert.ok(loaded.state.decisions.some((d) => d.reason.includes("任务配置")));
+    assert.ok(loaded.state.nextAction.includes("候选"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("T4：缺 --config 或非法配置时拒绝初始化，不留下半成品工作区", async () => {
+  const dir = await tempWorkspace();
+  try {
+    await assert.rejects(() => cmdInit(["--workspace", dir]), /--config/);
+    assert.equal(await stateExists(dir), false);
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, JSON.stringify({ schemaVersion: 1, title: "x" }), "utf8");
+    await assert.rejects(() => cmdInit(["--workspace", dir, "--config", bad]), /无效/);
+    assert.equal(await stateExists(dir), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

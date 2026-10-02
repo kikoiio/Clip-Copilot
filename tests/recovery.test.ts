@@ -25,6 +25,7 @@ import {
   sha256File,
 } from "../src/workspace/store.ts";
 import { cmdCheckpoint, cmdEdit, cmdIngest, cmdRender, cmdReview, cmdResume, cmdScore, cmdStatus, cmdInit } from "../src/workflow/coordinator.ts";
+import { loadTaskConfig, taskConfigToGoal, validateTaskConfig, type TaskConfig } from "../src/workflow/taskConfig.ts";
 
 async function tempWorkspace(): Promise<string> {
   return await mkdtemp(path.join(tmpdir(), "mm-test-"));
@@ -252,4 +253,67 @@ test("T23：resume 在删除依赖文件后指出问题", async () => {
 test("nextId 递增", () => {
   assert.equal(nextId("asset", []), "asset-001");
   assert.equal(nextId("asset", [{ id: "asset-003" }, { id: "asset-001" }]), "asset-004");
+});
+
+/* ---------- 阶段 2：任务配置 ---------- */
+
+function sampleTaskConfig(): TaskConfig {
+  return {
+    schemaVersion: 1,
+    title: "测试样板",
+    theme: "黄昏海岸，从宁静到涌动",
+    moodArc: [
+      { name: "宁静", energy: 0 },
+      { name: "涌动", energy: 2 },
+    ],
+    duration: { minSeconds: 30, maxSeconds: 60 },
+    outputSpec: { width: 1920, height: 1080, fps: 30 },
+    assets: [
+      { sourceUrl: "https://www.pexels.com/video/test/", licenseUrl: "https://www.pexels.com/license/" },
+    ],
+  };
+}
+
+test("T2：合法任务配置通过校验并换算为帧目标", () => {
+  const config = sampleTaskConfig();
+  assert.deepEqual(validateTaskConfig(config), []);
+  const goal = taskConfigToGoal(config);
+  assert.equal(goal.title, "测试样板");
+  assert.equal(goal.minFrames, 900);
+  assert.equal(goal.maxFrames, 1800);
+  assert.deepEqual(goal.outputSpec, { width: 1920, height: 1080, fps: 30 });
+  assert.equal(goal.moodArc.length, 2);
+});
+
+test("T2：缺字段、时长颠倒、未验证规格三类非法配置被拒且指明字段", () => {
+  const missing = sampleTaskConfig();
+  delete (missing as Partial<TaskConfig>).theme;
+  assert.ok(validateTaskConfig(missing).some((e) => e.includes("theme")));
+
+  const inverted = sampleTaskConfig();
+  inverted.duration = { minSeconds: 60, maxSeconds: 30 };
+  const invertedErrors = validateTaskConfig(inverted);
+  assert.ok(invertedErrors.some((e) => e.includes("minSeconds") && e.includes("maxSeconds")));
+
+  const badSpec = sampleTaskConfig();
+  badSpec.outputSpec = { width: 1080, height: 1920, fps: 30 };
+  assert.ok(validateTaskConfig(badSpec).some((e) => e.includes("outputSpec") && e.includes("未验证规格")));
+
+  const badMood = sampleTaskConfig();
+  badMood.moodArc = [{ name: "越界", energy: 3 }];
+  assert.ok(validateTaskConfig(badMood).some((e) => e.includes("moodArc[0].energy")));
+});
+
+test("T2：loadTaskConfig 读取合法配置，损坏文件可诊断", async () => {
+  const dir = await tempWorkspace();
+  try {
+    const file = path.join(dir, "task.json");
+    await writeFile(file, JSON.stringify(sampleTaskConfig()), "utf8");
+    const loaded = await loadTaskConfig(file);
+    assert.equal(loaded.title, "测试样板");
+    await writeFile(file, "{broken", "utf8");
+    await assert.rejects(() => loadTaskConfig(file), /不是合法 JSON/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

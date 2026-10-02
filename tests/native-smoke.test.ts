@@ -17,8 +17,8 @@ import { probeMedia, checkMediaBasics, detectBlackSegments, detectSilenceSegment
 import { checkProjectReferences, recordObservation } from "../src/verification/native.ts";
 import { ingestAsset, checkAsset } from "../src/assets/catalog.ts";
 import { loadLmmsTemplate, renderScoreWav, scorePlanFingerprint, writeScoreProject } from "../src/score/lmms.ts";
-import { loadKdenliveTemplate, writeEditProject } from "../src/video/kdenlive.ts";
-import type { AssetRecord, EditPlan, ScorePlan } from "../src/domain.ts";
+import { writeEditProject } from "../src/video/kdenlive.ts";
+import type { AssetRecord, EditPlan, Goal, ScorePlan } from "../src/domain.ts";
 
 const exec = promisify(execFile);
 
@@ -179,6 +179,17 @@ function editPlan30s(assets: Awaited<ReturnType<typeof sampleAssets>>, soundtrac
   };
 }
 
+function smokeGoal(): Goal {
+  return {
+    title: "原生冒烟测试",
+    theme: "生成的测试画面与正弦音，不进入任何成片",
+    minFrames: 450,
+    maxFrames: 1350,
+    outputSpec: { width: 1920, height: 1080, fps: 30 },
+    moodArc: [],
+  };
+}
+
 test("T14-T17：Kdenlive 工程生成、时间线与 MP4 导出", { skip: !APPIMAGES_PRESENT }, async () => {
   const dir = await tempDir("mm-kdenlive-");
   try {
@@ -194,7 +205,7 @@ test("T14-T17：Kdenlive 工程生成、时间线与 MP4 导出", { skip: !APPIM
 
     const plan = editPlan30s(mapped, "artifact-001");
     const projectPath = path.join(dir, "edit-test.kdenlive");
-    await writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs, templatePath, projectPath);
+    await writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs, templatePath, projectPath, smokeGoal());
     // 生成的工程必须引用每个素材的现存路径
     const xml = await readFile(projectPath, "utf8");
     for (const asset of mapped) {
@@ -204,18 +215,18 @@ test("T14-T17：Kdenlive 工程生成、时间线与 MP4 导出", { skip: !APPIM
     const badPlan = structuredClone(plan);
     badPlan.clips[1]!.timelineStartFrame = 400;
     await assert.rejects(
-      () => writeEditProject(badPlan, dir, mapped, wav, wavMedia.durationMs, templatePath, path.join(dir, "bad.kdenlive")),
+      () => writeEditProject(badPlan, dir, mapped, wav, wavMedia.durationMs, templatePath, path.join(dir, "bad.kdenlive"), smokeGoal()),
       /空洞|重叠/,
     );
     // 超出 1s 容差的 WAV 被拒
     await assert.rejects(
-      () => writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs + 5000, templatePath, path.join(dir, "bad2.kdenlive")),
+      () => writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs + 5000, templatePath, path.join(dir, "bad2.kdenlive"), smokeGoal()),
       /容差/,
     );
     // 素材文件删除后拒绝生成
     await rm(mapped[0]!.localPath);
     await assert.rejects(
-      () => writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs, templatePath, path.join(dir, "bad3.kdenlive")),
+      () => writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs, templatePath, path.join(dir, "bad3.kdenlive"), smokeGoal()),
       /缺失/,
     );
     await ffmpeg(["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30", "-t", "15", "-pix_fmt", "yuv420p", mapped[0]!.localPath]);

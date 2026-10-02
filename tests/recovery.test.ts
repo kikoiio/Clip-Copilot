@@ -11,8 +11,10 @@ import {
   validateClipLayout,
   validateEditPlan,
   validateScorePlan,
+  validateScorePlanAgainstGoal,
   scoreDurationMs,
 } from "../src/domain.ts";
+import { writeEditProject } from "../src/video/kdenlive.ts";
 import {
   WorkspaceError,
   auditArtifacts,
@@ -80,36 +82,37 @@ test("T7：非法阶段迁移被拒绝", () => {
 });
 
 test("T7：越界片长与时间线空洞被拒绝", () => {
+  const goal = sampleGoal();
   const ok = validateClipLayout([
     { assetId: "a", sourceInMs: 0, timelineStartFrame: 0, durationFrames: 900 },
-  ]);
+  ], goal.minFrames, goal.maxFrames);
   assert.equal(ok.ok, true);
   const gap = validateClipLayout([
     { assetId: "a", sourceInMs: 0, timelineStartFrame: 0, durationFrames: 500 },
     { assetId: "a", sourceInMs: 0, timelineStartFrame: 520, durationFrames: 400 },
-  ]);
+  ], goal.minFrames, goal.maxFrames);
   assert.equal(gap.ok, false);
   const overlap = validateClipLayout([
     { assetId: "a", sourceInMs: 0, timelineStartFrame: 0, durationFrames: 600 },
     { assetId: "a", sourceInMs: 0, timelineStartFrame: 400, durationFrames: 500 },
-  ]);
+  ], goal.minFrames, goal.maxFrames);
   assert.equal(overlap.ok, false);
   const tooLong = validateClipLayout([
     { assetId: "a", sourceInMs: 0, timelineStartFrame: 0, durationFrames: 1801 },
-  ]);
+  ], goal.minFrames, goal.maxFrames);
   assert.equal(tooLong.ok, false);
 });
 
 test("T7：引用不存在素材或未确认配乐的计划被拒绝", () => {
-  const state = emptyState(sampleGoal());
+  const goal = sampleGoal();
   const assets = [{
     id: "asset-001", sourceUrl: "s", licenseUrl: "l", licenseCheckedAt: "2026-10-01",
     localPath: "assets/a.mp4", sha256: "x", bytes: 1,
     media: { durationMs: 60000, width: 1920, height: 1080, fps: 30, hasAudio: true, hasVideo: true },
   }];
-  const missingAsset = validateEditPlan(sampleEditPlan("artifact-001"), [], [], state);
+  const missingAsset = validateEditPlan(sampleEditPlan("artifact-001"), [], [], goal);
   assert.ok(missingAsset.some((e) => e.includes("asset-001")));
-  const missingSoundtrack = validateEditPlan(sampleEditPlan("artifact-001"), assets, [], state);
+  const missingSoundtrack = validateEditPlan(sampleEditPlan("artifact-001"), assets, [], goal);
   assert.ok(missingSoundtrack.some((e) => e.includes("artifact-001")));
 });
 
@@ -440,6 +443,73 @@ test("T5：init 后 handoff 列出候选清单与登记状态", async () => {
     assert.ok(handoff.includes("素材候选"));
     assert.ok(handoff.includes("[待登记] https://www.pexels.com/video/test/"));
     assert.ok(handoff.includes("黄昏海岸，从宁静到涌动"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/* ---------- 阶段 2：一致性闸门与规格交叉核对 ---------- */
+
+test("T6：配乐方案时长越界被拒，±1 小节内放行", () => {
+  const goal = sampleGoal(); // 30–60s
+  const plan = sampleScorePlan(); // 24 小节 @120BPM = 48s，应通过
+  assert.deepEqual(validateScorePlanAgainstGoal(plan, goal), []);
+  const tooShort = structuredClone(plan) as ScorePlan;
+  tooShort.bpm = 240; // 24s，超出 30s 下限减 1 小节（1s）
+  assert.ok(validateScorePlanAgainstGoal(tooShort, goal).some((e) => e.includes("超出目标范围")));
+  const tooLong = structuredClone(plan) as ScorePlan;
+  tooLong.sections = tooLong.sections.map((s) => ({ ...s, bars: s.bars * 2 })); // 96s
+  assert.ok(validateScorePlanAgainstGoal(tooLong, goal).some((e) => e.includes("超出目标范围")));
+});
+
+test("T6：情绪走向节点未按顺序覆盖被拒，空 moodArc 跳过", () => {
+  const goal = sampleGoal(); // 宁静(0) → 涌动(2)
+  const plan = sampleScorePlan(); // 0 → 1 → 2，覆盖成功
+  assert.deepEqual(validateScorePlanAgainstGoal(plan, goal), []);
+  const flat = structuredClone(plan) as ScorePlan;
+  flat.sections = flat.sections.map((s) => ({ ...s, energy: 0 })); // 全程 0，涌动(2) 无人覆盖
+  const errors = validateScorePlanAgainstGoal(flat, goal);
+  assert.ok(errors.some((e) => e.includes("涌动")));
+  const reordered = structuredClone(plan) as ScorePlan;
+  reordered.sections = [...reordered.sections].reverse(); // 2 → 1 → 0：宁静(0) 被末段贪婪匹配后，涌动(2) 无段可覆盖
+  assert.ok(validateScorePlanAgainstGoal(reordered, goal).some((e) => e.includes("涌动")));
+  // 阶段 1 迁移的旧工作区：moodArc 为空，跳过情绪校验
+  const legacyGoal = { ...goal, moodArc: [] };
+  assert.deepEqual(validateScorePlanAgainstGoal(flat, legacyGoal), []);
+});
+
+test("T6：剪辑计划规格与目标不一致被拒", () => {
+  const goal = sampleGoal();
+  const plan = sampleEditPlan("artifact-001");
+  plan.profile = { width: 1280, height: 720, fps: 30 };
+  const errors = validateEditPlan(plan, [], [], goal);
+  assert.ok(errors.some((e) => e.includes("与目标规格") && e.includes("不一致")));
+});
+
+test("T6/C7：目标规格与模板不一致时在生成工程前报错且不产出文件", async () => {
+  const dir = await tempWorkspace();
+  try {
+    // 720p 目标：plan.profile 与 goal 一致、时长与素材都在范围内，但模板是 1080p → 必须在模板交叉核对处被拒
+    const goal = { ...sampleGoal(), outputSpec: { width: 1280, height: 720, fps: 30 } };
+    const plan = sampleEditPlan("artifact-001");
+    plan.profile = { width: 1280, height: 720, fps: 30 };
+    await mkdir(path.join(dir, "assets"), { recursive: true });
+    await writeFile(path.join(dir, "assets", "a.mp4"), "fake-video");
+    const wav = path.join(dir, "score.wav");
+    await writeFile(wav, "fake-audio");
+    const assets = [{
+      id: "asset-001", sourceUrl: "s", licenseUrl: "l", licenseCheckedAt: "2026-10-01",
+      localPath: "assets/a.mp4", sha256: "x", bytes: 10,
+      media: { durationMs: 60000, width: 1280, height: 720, fps: 30, hasAudio: true, hasVideo: true },
+    }];
+    const templatePath = path.resolve("templates", "kdenlive", "base.kdenlive");
+    const outputPath = path.join(dir, "bad.kdenlive");
+    await assert.rejects(
+      () => writeEditProject(plan, dir, assets, wav, 48000, templatePath, outputPath, goal),
+      (err: Error) => err.message.includes("模板未验证该规格"),
+    );
+    const produced = await stat(outputPath).then(() => true).catch(() => false);
+    assert.equal(produced, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

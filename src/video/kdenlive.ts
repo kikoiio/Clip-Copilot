@@ -3,9 +3,9 @@ import path from "node:path";
 import { DOMParser, XMLSerializer, type Document, type Element } from "@xmldom/xmldom";
 import {
   AV_TOLERANCE_MS,
-  FPS,
   type AssetRecord,
   type EditPlan,
+  type Goal,
   validateClipLayout,
 } from "../domain.ts";
 import { runKdenlive, saveRunEvidence, type RunResult } from "../infra/process.ts";
@@ -15,9 +15,9 @@ export class KdenliveError extends Error {}
 
 export interface KdenliveTemplate {
   dom: Document;
+  /** 从模板 profile 节点读出的实际规格，用于与工作区目标交叉核对。 */
+  profile: { width: number; height: number; fps: number };
 }
-
-export const EXPECTED_PROFILE = { width: 1920, height: 1080, fps: 30 };
 
 function firstElement(doc: Document, tag: string, attr?: { name: string; value: string }): Element | undefined {
   for (const el of Array.from(doc.getElementsByTagName(tag))) {
@@ -46,7 +46,7 @@ function addProperty(doc: Document, parent: Element, name: string, value: string
   parent.appendChild(prop);
 }
 
-/** 读取并校验 .kdenlive 模板：MLT 根节点、1080p30 规格、两条时间线轨与 tractor。 */
+/** 读取并校验 .kdenlive 模板：MLT 根节点、profile 规格、两条时间线轨与 tractor。 */
 export function loadKdenliveTemplate(xml: string, sourceName: string): KdenliveTemplate {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   const parseError = doc.getElementsByTagName("parsererror");
@@ -59,12 +59,11 @@ export function loadKdenliveTemplate(xml: string, sourceName: string): KdenliveT
   }
   const profile = firstElement(doc, "profile");
   if (!profile) throw new KdenliveError(`${sourceName} 缺少 profile`);
-  if (
-    Number(profile.getAttribute("width")) !== EXPECTED_PROFILE.width ||
-    Number(profile.getAttribute("height")) !== EXPECTED_PROFILE.height ||
-    Number(profile.getAttribute("frame_rate_num")) !== EXPECTED_PROFILE.fps
-  ) {
-    throw new KdenliveError(`${sourceName} 的项目规格不是 1920×1080、30 帧/秒`);
+  const width = Number(profile.getAttribute("width"));
+  const height = Number(profile.getAttribute("height"));
+  const fps = Number(profile.getAttribute("frame_rate_num"));
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(fps) || fps <= 0) {
+    throw new KdenliveError(`${sourceName} 的 profile 规格不完整`);
   }
   for (const id of ["main_bin", "timeline_track0", "timeline_track1"]) {
     if (!firstElement(doc, "playlist", { name: "id", value: id })) {
@@ -78,15 +77,15 @@ export function loadKdenliveTemplate(xml: string, sourceName: string): KdenliveT
   if (transitions.length < 2) {
     throw new KdenliveError(`${sourceName} 缺少视频合成或音频混合 transition`);
   }
-  return { dom: doc };
+  return { dom: doc, profile: { width, height, fps } };
 }
 
 export function editPlanFingerprint(plan: EditPlan): string {
   return sha256Text(JSON.stringify(plan)).slice(0, 16);
 }
 
-function framesFromMs(ms: number): number {
-  return Math.round((ms / 1000) * FPS);
+function framesFromMs(ms: number, fps: number): number {
+  return Math.round((ms / 1000) * fps);
 }
 
 interface ClipProducerInfo {
@@ -147,7 +146,8 @@ export interface WriteEditResult {
 
 /**
  * 按 EditPlan 生成新的 .kdenlive：克隆模板 DOM，替换时间线条目并写入素材 producer。
- * 模板中的一秒测试引用会被移除；素材文件缺失时拒绝生成。
+ * 计划规格必须等于工作区目标规格，模板实际规格必须经过目标规格验证（交叉核对），
+ * 不一致在生成工程之前报错；模板中的一秒测试引用会被移除；素材文件缺失时拒绝生成。
  */
 export async function writeEditProject(
   plan: EditPlan,
@@ -157,17 +157,26 @@ export async function writeEditProject(
   soundtrackDurationMs: number,
   templatePath: string,
   outputPath: string,
+  goal: Goal,
 ): Promise<WriteEditResult> {
   if (path.resolve(outputPath) === path.resolve(templatePath)) {
     throw new KdenliveError("输出路径不能与模板相同");
   }
-  if (plan.profile.width !== EXPECTED_PROFILE.width || plan.profile.height !== EXPECTED_PROFILE.height || plan.profile.fps !== EXPECTED_PROFILE.fps) {
-    throw new KdenliveError("剪辑计划规格必须是 1920×1080、30 帧/秒");
+  const spec = goal.outputSpec;
+  if (
+    plan.profile.width !== spec.width ||
+    plan.profile.height !== spec.height ||
+    plan.profile.fps !== spec.fps
+  ) {
+    throw new KdenliveError(
+      `剪辑计划规格 ${plan.profile.width}×${plan.profile.height}@${plan.profile.fps} 与工作区目标规格 ${spec.width}×${spec.height}@${spec.fps} 不一致`,
+    );
   }
-  const layout = validateClipLayout(plan.clips);
+  const layout = validateClipLayout(plan.clips, goal.minFrames, goal.maxFrames);
   if (!layout.ok) throw new KdenliveError(layout.reason);
+  const fps = spec.fps;
   const totalFrames = layout.totalFrames;
-  const targetDurationMs = Math.round((totalFrames / FPS) * 1000);
+  const targetDurationMs = Math.round((totalFrames / fps) * 1000);
   const drift = Math.abs(soundtrackDurationMs - targetDurationMs);
   if (drift > AV_TOLERANCE_MS) {
     throw new KdenliveError(
@@ -190,7 +199,17 @@ export async function writeEditProject(
   }
 
   const templateXml = await readFile(templatePath, "utf8");
-  const { dom: doc } = loadKdenliveTemplate(templateXml, path.basename(templatePath));
+  const template = loadKdenliveTemplate(templateXml, path.basename(templatePath));
+  if (
+    template.profile.width !== spec.width ||
+    template.profile.height !== spec.height ||
+    template.profile.fps !== spec.fps
+  ) {
+    throw new KdenliveError(
+      `模板 ${path.basename(templatePath)} 的规格 ${template.profile.width}×${template.profile.height}@${template.profile.fps} 与目标规格 ${spec.width}×${spec.height}@${spec.fps} 不一致：模板未验证该规格，拒绝生成工程`,
+    );
+  }
+  const { dom: doc } = template;
 
   const root = doc.documentElement;
   if (!root) throw new KdenliveError(`${templatePath} 缺少文档根节点`);
@@ -216,14 +235,14 @@ export async function writeEditProject(
   const clipInfos: ClipProducerInfo[] = [];
   plan.clips.forEach((clip, index) => {
     const asset = byId.get(clip.assetId)!;
-    const assetFrames = Math.max(1, framesFromMs(asset.media.durationMs));
+    const assetFrames = Math.max(1, framesFromMs(asset.media.durationMs, fps));
     const producer = buildAssetProducer(doc, index, workspaceDir, asset, assetFrames);
     if (index === 0) addFadeFilter(doc, producer, "in", plan.fadeInFrames, assetFrames - 1);
     if (index === plan.clips.length - 1) {
       addFadeFilter(doc, producer, "out", plan.fadeOutFrames, assetFrames - 1);
     }
     root.insertBefore(producer, mainBin);
-    const entryIn = framesFromMs(clip.sourceInMs);
+    const entryIn = framesFromMs(clip.sourceInMs, fps);
     const entryOut = entryIn + clip.durationFrames - 1;
     if (entryOut > assetFrames - 1) {
       throw new KdenliveError(`片段 ${clip.assetId} 的出点超出素材长度`);
@@ -245,7 +264,7 @@ export async function writeEditProject(
   }
 
   // 4. 配乐轨：整条 WAV 铺满时间线
-  const wavFrames = framesFromMs(soundtrackDurationMs);
+  const wavFrames = framesFromMs(soundtrackDurationMs, fps);
   const audioProducer = doc.createElement("producer");
   setAttributes(audioProducer, { id: "producer_soundtrack", in: 0, out: Math.max(0, wavFrames - 1) });
   addProperty(doc, audioProducer, "length", String(wavFrames));

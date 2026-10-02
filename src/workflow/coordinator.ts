@@ -16,6 +16,7 @@ import {
   artifactById,
   validateEditPlan,
   validateScorePlan,
+  validateScorePlanAgainstGoal,
   scoreDurationMs,
 } from "../domain.ts";
 import { ingestAsset, checkAsset } from "../assets/catalog.ts";
@@ -299,7 +300,11 @@ export async function cmdScore(args: string[]): Promise<number> {
   }
   const plan = await readPlanFile<ScorePlan>(planFile);
   const errors = validateScorePlan(plan);
-  if (errors.length > 0) throw new WorkspaceError(`配乐方案无效：${errors.join("；")}`);
+  errors.push(...validateScorePlanAgainstGoal(plan, loaded.state.goal));
+  if (errors.length > 0) {
+    const prefix = validateScorePlan(plan).length > 0 ? "配乐方案无效" : "配乐方案与任务目标不一致";
+    throw new WorkspaceError(`${prefix}：${errors.join("；")}`);
+  }
   loaded.state.scorePlan = plan;
   if (loaded.state.phase === "assets") {
     await checkPhaseTransition(loaded, "score_draft");
@@ -325,7 +330,7 @@ export async function cmdEdit(args: string[]): Promise<number> {
     throw new WorkspaceError(`当前阶段 ${loaded.state.phase} 不允许写入剪辑方案（需先通过配乐检查点）`);
   }
   const plan = await readPlanFile<EditPlan>(planFile);
-  const errors = validateEditPlan(plan, loaded.state.assets, loaded.state.artifacts, loaded.state);
+  const errors = validateEditPlan(plan, loaded.state.assets, loaded.state.artifacts, loaded.state.goal);
   if (errors.length > 0) throw new WorkspaceError(`剪辑方案无效：${errors.join("；")}`);
   loaded.state.editPlan = plan;
   loaded.state.nextAction = "运行 render video 生成粗剪工程与预览。";
@@ -437,6 +442,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     const templatePath = path.join(REPO_ROOT, "templates", "kdenlive", "base.kdenlive");
     await writeEditProject(
       plan, loaded.dir, loaded.state.assets, wavFile, wavMedia.durationMs, templatePath, projectPath,
+      loaded.state.goal,
     );
     const basedOn = [tag, soundtrack.id, ...plan.clips.map((c) => c.assetId)];
     const projectArtifact = await registerArtifact(loaded, {
@@ -447,7 +453,9 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
     const mp4Checks = await checkMediaBasics(mp4Path, {
       hasVideo: true, hasAudio: true,
-      width: 1920, height: 1080, fps: 30,
+      width: loaded.state.goal.outputSpec.width,
+      height: loaded.state.goal.outputSpec.height,
+      fps: loaded.state.goal.outputSpec.fps,
     });
     const allPass = mp4Checks.every((c) => c.status === "pass");
     const mp4Artifact = await registerArtifact(loaded, {
@@ -494,7 +502,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   loaded.state.artifacts.push(finalWavArtifact);
   const projectPath = path.join(loaded.dir, "projects", "final.kdenlive");
   const templatePath = path.join(REPO_ROOT, "templates", "kdenlive", "base.kdenlive");
-  await writeEditProject(plan, loaded.dir, loaded.state.assets, finalWav, wavMedia.durationMs, templatePath, projectPath);
+  await writeEditProject(plan, loaded.dir, loaded.state.assets, finalWav, wavMedia.durationMs, templatePath, projectPath, loaded.state.goal);
   const projectArtifact = await registerArtifact(loaded, {
     kind: "kdenlive_project", file: projectPath,
     basedOn: [videoCheckpoint.id, ...plan.clips.map((c) => c.assetId)], status: "confirmed",
@@ -503,7 +511,10 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   const mp4Path = path.join(loaded.dir, "outputs", "final.mp4");
   const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
   const mp4Checks = await checkMediaBasics(mp4Path, {
-    hasVideo: true, hasAudio: true, width: 1920, height: 1080, fps: 30,
+    hasVideo: true, hasAudio: true,
+    width: loaded.state.goal.outputSpec.width,
+    height: loaded.state.goal.outputSpec.height,
+    fps: loaded.state.goal.outputSpec.fps,
     minDurationMs: loaded.state.goal.minFrames / loaded.state.goal.outputSpec.fps * 1000 - AV_TOLERANCE_MS,
   });
   const black = await detectBlackSegments(mp4Path);

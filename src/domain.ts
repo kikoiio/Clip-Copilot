@@ -5,9 +5,6 @@
 
 export const SCHEMA_VERSION = 2;
 
-export const FPS = 30;
-export const MIN_FRAMES = 900;
-export const MAX_FRAMES = 1800;
 /** 配乐与视频允许的最大时长差（毫秒）。 */
 export const AV_TOLERANCE_MS = 1000;
 /** 素材下载总量默认上限：2 GB。 */
@@ -240,9 +237,11 @@ export interface WorkspaceState {
   updatedAt: string;
 }
 
-/** 计划分片必须正好铺满 0..totalFrames，无空洞、无重叠。 */
+/** 计划分片必须正好铺满 0..totalFrames，无空洞、无重叠；总长落在给定目标范围内。 */
 export function validateClipLayout(
   clips: EditPlanClip[],
+  minFrames: number,
+  maxFrames: number,
 ): { ok: true; totalFrames: number } | { ok: false; reason: string } {
   if (clips.length === 0) return { ok: false, reason: "剪辑计划没有任何片段" };
   let expected = 0;
@@ -259,23 +258,30 @@ export function validateClipLayout(
     expected += clip.durationFrames;
   }
   const total = expected;
-  if (total < MIN_FRAMES || total > MAX_FRAMES) {
-    return { ok: false, reason: `总长 ${total} 帧超出 ${MIN_FRAMES}–${MAX_FRAMES} 帧范围` };
+  if (total < minFrames || total > maxFrames) {
+    return { ok: false, reason: `总长 ${total} 帧超出目标范围 ${minFrames}–${maxFrames} 帧` };
   }
   return { ok: true, totalFrames: total };
 }
 
-/** 剪辑计划完整校验：引用、片源边界、时长、配乐对应。 */
+/** 剪辑计划完整校验：规格等于目标规格、引用、片源边界、时长范围、配乐对应。 */
 export function validateEditPlan(
   plan: EditPlan,
   assets: AssetRecord[],
   artifacts: ArtifactRecord[],
-  state: Pick<WorkspaceState, "goal">,
+  goal: Goal,
 ): string[] {
   const errors: string[] = [];
-  if (plan.profile.width !== 1920 || plan.profile.height !== 1080 || plan.profile.fps !== FPS) {
-    errors.push("剪辑计划规格必须是 1920×1080、30 帧/秒");
+  if (
+    plan.profile.width !== goal.outputSpec.width ||
+    plan.profile.height !== goal.outputSpec.height ||
+    plan.profile.fps !== goal.outputSpec.fps
+  ) {
+    errors.push(
+      `剪辑计划规格 ${plan.profile.width}×${plan.profile.height}@${plan.profile.fps} 与目标规格 ${goal.outputSpec.width}×${goal.outputSpec.height}@${goal.outputSpec.fps} 不一致`,
+    );
   }
+  const fps = goal.outputSpec.fps;
   const byId = new Map(assets.map((a) => [a.id, a]));
   for (const clip of plan.clips) {
     const asset = byId.get(clip.assetId);
@@ -284,7 +290,7 @@ export function validateEditPlan(
       continue;
     }
     const inMs = clip.sourceInMs;
-    const outMs = inMs + (clip.durationFrames / FPS) * 1000;
+    const outMs = inMs + (clip.durationFrames / fps) * 1000;
     if (outMs > asset.media.durationMs + 1) {
       errors.push(
         `素材 ${clip.assetId} 的出点 ${Math.round(outMs)}ms 超出其时长 ${Math.round(asset.media.durationMs)}ms`,
@@ -296,13 +302,8 @@ export function validateEditPlan(
       );
     }
   }
-  const layout = validateClipLayout(plan.clips);
+  const layout = validateClipLayout(plan.clips, goal.minFrames, goal.maxFrames);
   if (!layout.ok) errors.push(layout.reason);
-  else if (layout.totalFrames < state.goal.minFrames || layout.totalFrames > state.goal.maxFrames) {
-    errors.push(
-      `总长 ${layout.totalFrames} 帧超出目标范围 ${state.goal.minFrames}–${state.goal.maxFrames}`,
-    );
-  }
   const soundtrack = artifacts.find((a) => a.id === plan.soundtrackArtifactId);
   if (!soundtrack) {
     errors.push(`配乐产物 ${plan.soundtrackArtifactId} 不存在`);
@@ -347,6 +348,47 @@ export function validateScorePlan(plan: ScorePlan): string[] {
 export function scoreDurationMs(plan: ScorePlan): number {
   const bars = plan.sections.reduce((sum, s) => sum + s.bars, 0);
   return bars * plan.beatsPerBar * (60_000 / plan.bpm);
+}
+
+/**
+ * 配乐方案与作品目标的一致性校验（spec F4）：
+ * ① 总时长换算后落在目标范围内（±1 小节容差）；
+ * ② 段落按顺序覆盖 moodArc 每个节点（能量容差 0.5）；
+ * moodArc 为空（阶段 1 迁移的旧工作区）时跳过情绪校验。
+ */
+export function validateScorePlanAgainstGoal(plan: ScorePlan, goal: Goal): string[] {
+  const errors: string[] = [];
+  const fps = goal.outputSpec.fps;
+  const minMs = (goal.minFrames / fps) * 1000;
+  const maxMs = (goal.maxFrames / fps) * 1000;
+  const barMs = plan.beatsPerBar * (60_000 / plan.bpm);
+  const duration = scoreDurationMs(plan);
+  if (duration < minMs - barMs || duration > maxMs + barMs) {
+    errors.push(
+      `配乐总时长 ${(duration / 1000).toFixed(1)}s 超出目标范围 ${(minMs / 1000).toFixed(1)}–${(maxMs / 1000).toFixed(1)}s（±1 小节容差）`,
+    );
+  }
+  if (goal.moodArc.length > 0) {
+    let cursor = 0;
+    for (const node of goal.moodArc) {
+      let matched = -1;
+      for (let i = cursor; i < plan.sections.length; i++) {
+        const section = plan.sections[i];
+        if (section && Math.abs(section.energy - node.energy) <= 0.5) {
+          matched = i;
+          break;
+        }
+      }
+      if (matched === -1) {
+        errors.push(
+          `情绪走向节点「${node.name}」(energy ${node.energy}) 未被段落按顺序覆盖（能量容差 0.5）`,
+        );
+      } else {
+        cursor = matched + 1;
+      }
+    }
+  }
+  return errors;
 }
 
 export function assetById(state: WorkspaceState, id: string): AssetRecord | undefined {

@@ -44,7 +44,7 @@ import {
   measurePeakVolume,
   probeMedia,
 } from "../verification/media.ts";
-import { checkProjectReferences } from "../verification/native.ts";
+import { checkProjectReferences, recordObservation } from "../verification/native.ts";
 import {
   applyWaivers,
   deepAudioChecks,
@@ -834,6 +834,13 @@ export async function cmdVerify(args: string[]): Promise<number> {
               }]),
         );
       }
+      // 人工项标注（spec F7/AC6）：主观满意度挂在最新终版上，无法自动验证，必须人来。
+      if (artifact.kind === "video_final" && artifact.id === latestArtifact(loaded.state, "video_final")?.id) {
+        const subjective = await recordObservation(
+          evidenceDir, "subjective", "成片主题与情绪走向的主观满意度",
+        );
+        await runDeepOn(artifact, () => Promise.resolve([subjective]));
+      }
     }
   }
   // 无界面工程有效性验证（spec F3）：每类工程的最新产物（draft 或 confirmed）。
@@ -855,7 +862,16 @@ export async function cmdVerify(args: string[]): Promise<number> {
       const check = kind === "lmms_project"
         ? await headlessValidateLmmsProject(file, tmpDir, evidenceDir)
         : await headlessValidateKdenliveProject(file, tmpDir, evidenceDir);
-      await runDeepOn(latest, () => Promise.resolve([check]));
+      // 人工项标注（spec F7/C22）：工程可编辑性中无法自动验证的「软件内修改副本并
+      // 保存重开」与无界面验证同报告呈现；recordObservation 已有登记则判 pass。
+      const observation = await recordObservation(
+        evidenceDir,
+        kind === "lmms_project" ? "lmms-edit" : "kdenlive-edit",
+        kind === "lmms_project"
+          ? "LMMS 工程可编辑性（软件内修改副本并保存重开）"
+          : "Kdenlive 工程可编辑性（软件内修改副本并保存重开）",
+      );
+      await runDeepOn(latest, () => Promise.resolve([check, observation]));
     }
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
@@ -1061,6 +1077,42 @@ export async function cmdWaive(args: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * 登记一次软件内人工观察（spec F7）：把创作者在 LMMS/Kdenlive 中实际操作的结果
+ * 写入 evidence/observation-<name>.json，verify 的对应人工项随之翻转为 pass。
+ */
+export async function cmdObserve(args: string[]): Promise<number> {
+  const dir = requireWorkspaceArg(args);
+  const name = getOption(args, "--name");
+  const result = getOption(args, "--result") ?? "";
+  const action = getOption(args, "--action") ?? "软件内人工操作";
+  const copyPath = getOption(args, "--copy");
+  if (!name || !["lmms-edit", "kdenlive-edit", "subjective"].includes(name)) {
+    throw new WorkspaceError("缺少或非法的 --name 参数（lmms-edit | kdenlive-edit | subjective）");
+  }
+  if (result.trim() === "") {
+    throw new WorkspaceError("缺少 --result 参数：观察结果必须如实记录（先有证据再下结论）");
+  }
+  const loaded = await loadWorkspace(dir);
+  const subjects: Record<string, string> = {
+    "lmms-edit": "LMMS 工程可编辑性（软件内修改副本并保存重开）",
+    "kdenlive-edit": "Kdenlive 工程可编辑性（软件内修改副本并保存重开）",
+    subjective: "成片主题与情绪走向的主观满意度",
+  };
+  const check = await recordObservation(path.join(loaded.dir, "evidence"), name, subjects[name]!, {
+    action,
+    observedResult: result,
+    observer: getOption(args, "--observer") ?? "创作者",
+    ...(copyPath !== undefined ? { projectCopyPath: copyPath } : {}),
+  });
+  addDecision(loaded, `人工观察登记：${name}`, result, `verify 对应人工项判 ${check.status}（记录：evidence/observation-${name}.json）`);
+  await persist(loaded);
+  await writeHandoff(loaded);
+  console.log(`已登记观察 ${name}：${check.status}`);
+  console.log(`  ${check.evidence}`);
+  return 0;
+}
+
 export async function cmdResume(args: string[]): Promise<number> {
   const dir = requireWorkspaceArg(args);
   const loaded = await loadWorkspace(dir);
@@ -1163,4 +1215,5 @@ export const commands: Record<string, (args: string[]) => Promise<number>> = {
   resume: cmdResume,
   status: cmdStatus,
   waive: cmdWaive,
+  observe: cmdObserve,
 };

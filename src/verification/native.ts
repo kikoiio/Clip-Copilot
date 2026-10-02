@@ -87,7 +87,8 @@ export interface ObservationInput {
 
 /**
  * 把一次真实的软件内观察（打开、修改副本、保存、重开）记录为证据文件。
- * 没有观察到结果时返回 needs_human——无法自动验证的项必须人来，
+ * 无观察输入时先查 evidence/observation-<name>.json 是否已有记录：有则引用该记录判
+ * pass（人工已完成并登记）；没有则返回 needs_human——无法自动验证的项必须人来，
  * 绝不能仅凭 XML 正确就给 pass。（needs_observation 仅作为旧证据的兼容别名保留。）
  */
 export async function recordObservation(
@@ -96,24 +97,37 @@ export async function recordObservation(
   subject: string,
   observation?: ObservationInput,
 ): Promise<CheckResult> {
+  const recordFile = path.join(evidenceDir, `observation-${name}.json`);
   if (!observation || observation.observedResult.trim() === "") {
+    // 已有登记文件且观察到结果非空才判 pass（与录入路径同一标准：
+    // 「没有观察到结果时返回 needs_human——绝不能仅凭文件存在就给 pass」）。
+    const existing = await readFile(recordFile, "utf8").then((text) => {
+      const parsed = JSON.parse(text) as { observedResult?: string };
+      return typeof parsed.observedResult === "string" && parsed.observedResult.trim() !== "";
+    }).catch(() => false);
+    if (existing) {
+      return {
+        id: `observation:${name}`,
+        status: "pass",
+        evidence: `${subject}：已有软件内实际观察记录 ${recordFile}（人工完成并登记）`,
+      };
+    }
     return {
       id: `observation:${name}`,
       status: "needs_human",
-      evidence: `${subject}：尚未有软件内的实际观察记录。需要在 LMMS/Kdenlive 中打开、修改副本并保存后，用观察结果更新本项。此项必须人来，机器无法代替。`,
+      evidence: `${subject}：尚未有软件内的实际观察记录。需要在软件中打开、修改副本并保存后用 observe 命令登记。此项必须人来，机器无法代替。`,
     };
   }
   await mkdir(evidenceDir, { recursive: true });
-  const file = path.join(evidenceDir, `observation-${name}.json`);
   const record = {
     subject,
     ...observation,
     observedAt: observation.observedAt ?? new Date().toISOString(),
   };
-  await writeFile(file, JSON.stringify(record, null, 2), "utf8");
+  await writeFile(recordFile, JSON.stringify(record, null, 2), "utf8");
   return {
     id: `observation:${name}`,
     status: "pass",
-    evidence: `${subject}：${observation.observedResult}（操作：${observation.action}；副本：${observation.projectCopyPath ?? "未记录"}；记录：${file}）`,
+    evidence: `${subject}：${observation.observedResult}（操作：${observation.action}；副本：${observation.projectCopyPath ?? "未记录"}；记录：${recordFile}）`,
   };
 }

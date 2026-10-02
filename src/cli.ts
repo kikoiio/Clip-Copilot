@@ -25,6 +25,10 @@ const HELP = `山间清晨短片工作流
   waive       --workspace <目录> --check <检查项ID> [--artifact <产物ID>] --reason <文本>
                                                       豁免一条机器检查结论（原因必填、进决定
                                                       记录；豁免后该项在门禁中降级为告警）
+  observe     --workspace <目录> --name <lmms-edit|kdenlive-edit|subjective>
+                --result <观察结果> [--action <操作>] [--copy <副本路径>]
+                                                      登记一次软件内人工观察（对应 verify 中
+                                                      的 needs_human 人工项翻转为 pass）
   reopen      --workspace <目录> [--reason <文本>]    重开已交付（done）工作区的视频版本
                                                       （产物失效并回到 video_draft，用于适配器
                                                       升级后重新生成工程等场景）

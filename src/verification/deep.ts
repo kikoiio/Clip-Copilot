@@ -341,5 +341,396 @@ export async function measureLoudness(file: string): Promise<LoudnessReport> {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// 组合入口（deepVideoChecks / deepAudioChecks）：渲染流程与 verify 共用——后续任务追加
+// 组合入口（deepVideoChecks / deepAudioChecks）：渲染流程与 verify 共用
 // ───────────────────────────────────────────────────────────────────────────
+
+// 组合入口的依赖随本分节追加于文末，保持上方既有 import 块不动（import 声明会被提升）。
+import type { CheckResult, CheckStatus, MediaInfo, WaiverRecord } from "../domain.ts";
+import { scoreDurationMs } from "../domain.ts";
+import {
+  BLACKDETECT_FILTER,
+  detectBlackSegments,
+  detectSilenceSegments,
+  probeMedia,
+} from "./media.ts";
+
+/**
+ * 纯函数：豁免降级（plan.md「WaiverRecord」）。命中豁免的 fail → status "warn"，
+ * evidence 追加「；已豁免：<原因>」，原证据与 threshold/command/tool 保留。
+ * 匹配规则：waiver.checkId === result.id，且 waiver.artifactId 缺省（该检查项在
+ * 所有产物上豁免）或等于 artifactId 参数。只影响 fail；pass/warn/needs_* 原样返回。
+ * 多条豁免同时命中时按豁免记录顺序取第一条；不修改入参数组。
+ */
+export function applyWaivers(
+  results: CheckResult[],
+  waivers: WaiverRecord[],
+  artifactId?: string,
+): CheckResult[] {
+  return results.map((result) => {
+    if (result.status !== "fail") return result;
+    const waiver = waivers.find(
+      (w) =>
+        w.checkId === result.id &&
+        (w.artifactId === undefined || w.artifactId === artifactId),
+    );
+    if (!waiver) return result;
+    return {
+      ...result,
+      status: "warn",
+      evidence: `${result.evidence}；已豁免：${waiver.reason}`,
+    };
+  });
+}
+
+/** 检查项静态描述：id 与报告要求的 threshold/command/tool（N3 可追溯）。 */
+interface CheckSpec {
+  id: string;
+  threshold?: string;
+  command?: string;
+  tool?: string;
+}
+
+/**
+ * 单项执行包装：深度检查自身异常按 fail 处理，不得静默跳过——渲染闸门、
+ * checkpoint 门禁与 verify 退出码都只消费 fail/warn，静默跳过会让坏产物流过。
+ * run() 正常返回判定；抛错时该项整体降为 fail，错误信息写入 evidence，
+ * 静态字段（threshold/command/tool）照常保留。
+ */
+async function runGuarded(
+  spec: CheckSpec,
+  run: () => Promise<{ status: CheckStatus; evidence: string }>,
+): Promise<CheckResult> {
+  try {
+    const { status, evidence } = await run();
+    return { ...spec, status, evidence };
+  } catch (err) {
+    return {
+      ...spec,
+      status: "fail",
+      evidence: `深度检查执行异常：${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
+ * 共享 ffprobe：时长/黑帧/静音三项都需要实际总时长，探测一次即可；
+ * 失败时缓存错误，依赖它的各检查项分别拿到同一失败原因并各自 fail。
+ */
+function createLazyProbe(file: string): () => Promise<MediaInfo> {
+  let cache: MediaInfo | null = null;
+  let error: Error | null = null;
+  return async () => {
+    if (cache !== null) return cache;
+    if (error !== null) throw error;
+    try {
+      cache = await probeMedia(file);
+    } catch (err) {
+      error = err instanceof Error ? err : new Error(String(err));
+      throw error;
+    }
+    return cache;
+  };
+}
+
+/** 段落 evidence 文案：如「3.00s–5.00s（2.00s）」。 */
+function formatSegment(segment: TimeSegment): string {
+  return `${segment.startSec.toFixed(2)}s–${segment.endSec.toFixed(2)}s（${segment.durationSec.toFixed(2)}s）`;
+}
+
+/** 分类结果 evidence：意外段与有意段都列出（intentional/pass 项也要给证据）。 */
+function describeClassified(kind: string, classified: ClassifiedSegments): string {
+  const unexpected =
+    classified.unexpected.length > 0
+      ? `意外${kind} ${classified.unexpected.length} 段：${classified.unexpected.map(formatSegment).join("、")}`
+      : `无意外${kind}`;
+  const intentional =
+    classified.intentional.length > 0
+      ? `有意${kind} ${classified.intentional.length} 段：${classified.intentional.map(formatSegment).join("、")}`
+      : `无有意${kind}`;
+  return `${unexpected}；${intentional}`;
+}
+
+/** 时长检查：期望毫秒由调用方给出（视频=计划总帧数换算，音频=scoreDurationMs）。 */
+function durationCheck(
+  id: string,
+  file: string,
+  expectedMs: number,
+  probe: () => Promise<MediaInfo>,
+): Promise<CheckResult> {
+  const toleranceMs = DEEP_CHECK_DEFAULTS.durationToleranceMs;
+  return runGuarded(
+    {
+      id,
+      threshold: `|实际时长−期望时长| ≤ ${toleranceMs}ms（durationToleranceMs）`,
+      command: `ffprobe -v error -print_format json -show_format -show_streams ${file}`,
+      tool: "ffprobe",
+    },
+    async () => {
+      const info = await probe();
+      const { ok, driftMs } = checkDurationDeviation(info.durationMs, expectedMs, toleranceMs);
+      const detail =
+        `期望 ${(expectedMs / 1000).toFixed(2)}s（计划），实际 ${(info.durationMs / 1000).toFixed(2)}s，` +
+        `偏差 ${driftMs > 0 ? "+" : ""}${driftMs}ms`;
+      return {
+        status: ok ? "pass" : "fail",
+        evidence: ok ? `时长在容差内：${detail}` : `时长超差：${detail}`,
+      };
+    },
+  );
+}
+
+/** 分类函数的通用形参形态（classifyBlackSegments / classifySilenceSegments 共用）。 */
+type SegmentClassifier = (
+  segments: TimeSegment[],
+  fadeInSec: number,
+  fadeOutSec: number,
+  totalSec: number,
+) => ClassifiedSegments;
+
+/** 黑帧/静音检查共用骨架：detect 候选 → 按有意区间分类 → 有意外段即 fail。 */
+interface SegmentCheckArgs {
+  id: string;
+  /** 「黑帧」/「静音」，用于 evidence 文案。 */
+  kind: string;
+  file: string;
+  detect: (file: string) => Promise<TimeSegment[]>;
+  classify: SegmentClassifier;
+  /** 有意区间的头/尾长度（秒）。 */
+  fadeInSec: number;
+  fadeOutSec: number;
+  probe: () => Promise<MediaInfo>;
+  threshold: string;
+  command: string;
+  tool: string;
+}
+
+function segmentCheck(args: SegmentCheckArgs): Promise<CheckResult> {
+  return runGuarded(
+    { id: args.id, threshold: args.threshold, command: args.command, tool: args.tool },
+    async () => {
+      // totalSec 用实际文件时长：淡出区间锚定在实际文件结尾，而非计划值。
+      const info = await args.probe();
+      const totalSec = info.durationMs / 1000;
+      const classified = args.classify(
+        await args.detect(args.file),
+        args.fadeInSec,
+        args.fadeOutSec,
+        totalSec,
+      );
+      const ranges: string[] = [];
+      if (args.fadeInSec > 0) ranges.push(`头部 [0, ${args.fadeInSec.toFixed(3)}s]`);
+      if (args.fadeOutSec > 0) {
+        ranges.push(`尾部 [${(totalSec - args.fadeOutSec).toFixed(3)}s, ${totalSec.toFixed(3)}s]`);
+      }
+      const scope =
+        ranges.length > 0
+          ? `有意区间（计划声明）：${ranges.join("、")}`
+          : "计划未声明有意区间，候选一律判为意外";
+      return {
+        status: classified.unexpected.length > 0 ? "fail" : "pass",
+        evidence:
+          `${scope}；${describeClassified(args.kind, classified)}（实际总时长 ${totalSec.toFixed(3)}s）`,
+      };
+    },
+  );
+}
+
+/** 削波检查：最长连续满幅游程 ≥ 阈值即 fail（detectClipping 抛错由 runGuarded 接住）。 */
+function clipCheck(id: string, file: string): Promise<CheckResult> {
+  const minConsecutive = DEEP_CHECK_DEFAULTS.minConsecutiveClippedSamples;
+  return runGuarded(
+    {
+      id,
+      threshold: `≥${minConsecutive} 个连续满幅样本（s16le |sample| ≥ 32767）判削波`,
+      command: `ffmpeg -v error -i ${file} -vn -ac 2 -ar 48000 -f s16le -`,
+      tool: "ffmpeg + s16le PCM 游程扫描",
+    },
+    async () => {
+      const report = await detectClipping(file, minConsecutive);
+      const detail =
+        `最长连续满幅游程 ${report.maxConsecutive} 个样本，满幅样本总数 ${report.clippedSamples}`;
+      return {
+        status: report.maxConsecutive >= minConsecutive ? "fail" : "pass",
+        evidence:
+          report.maxConsecutive >= minConsecutive
+            ? `检测到削波：${detail}`
+            : `未检测到削波：${detail}`,
+      };
+    },
+  );
+}
+
+/** 响度检查：integrated LUFS 越界只判 warn（不 fail），避免风格性响度误伤（spec F1）。 */
+function loudnessCheck(id: string, file: string): Promise<CheckResult> {
+  const [minLufs, maxLufs] = DEEP_CHECK_DEFAULTS.loudnessRangeLufs;
+  return runGuarded(
+    {
+      id,
+      threshold: `integrated LUFS 在 [${minLufs}, ${maxLufs}] 内为 pass，越界判 warn（loudnessRangeLufs）`,
+      command: `ffmpeg -v info -i ${file} -filter_complex ebur128=peak=true -f null -`,
+      tool: "ffmpeg + ebur128",
+    },
+    async () => {
+      const report = await measureLoudness(file);
+      const inRange = report.integratedLufs >= minLufs && report.integratedLufs <= maxLufs;
+      return {
+        status: inRange ? "pass" : "warn",
+        evidence:
+          `integrated ${report.integratedLufs} LUFS，true peak ${report.truePeakDb} dBFS，LRA ${report.lra} LU` +
+          (inRange ? "（在判定范围内）" : "（越界：响度异常判 warn，不阻塞）"),
+      };
+    },
+  );
+}
+
+/** 声画对齐检查：scorePlan 缺失 → needs_human；纯计划对照，不分析媒体内容（spec F4）。 */
+function alignCheck(editPlan: EditPlan, scorePlan: ScorePlan | undefined): Promise<CheckResult> {
+  const toleranceMs = DEEP_CHECK_DEFAULTS.alignmentToleranceMs;
+  return runGuarded(
+    {
+      id: "deep:video:align",
+      threshold: `配乐段落边界与最近剪辑切点偏差 ≤ ${toleranceMs}ms（alignmentToleranceMs）`,
+      command: "（无外部命令：checkSectionAlignment 纯计划对照）",
+      tool: "deep.checkSectionAlignment（纯函数）",
+    },
+    async () => {
+      if (scorePlan === undefined) {
+        return { status: "needs_human", evidence: "缺少配乐方案数据，无法自动对照" };
+      }
+      const mismatches = checkSectionAlignment(editPlan, scorePlan, toleranceMs);
+      if (mismatches.length === 0) {
+        return {
+          status: "pass",
+          evidence:
+            scorePlan.sections.length <= 1
+              ? `配乐仅 ${scorePlan.sections.length} 段，无段落间边界需对照（剪辑 ${editPlan.clips.length} 个片段）`
+              : `配乐 ${scorePlan.sections.length} 段的段落间边界全部命中剪辑切点`,
+        };
+      }
+      const detail = mismatches
+        .map((m) => {
+          const cut =
+            m.nearestCutSec === null
+              ? "无切点可用"
+              : `最近切点 ${m.nearestCutSec.toFixed(2)}s，偏差 ${m.diffMs}ms`;
+          return `段落「${m.sectionName}」边界 ${m.sectionTimeSec.toFixed(2)}s，${cut}`;
+        })
+        .join("；");
+      return {
+        status: "fail",
+        evidence: `${mismatches.length} 个段落边界未命中剪辑切点：${detail}`,
+      };
+    },
+  );
+}
+
+/**
+ * 视频深度检查组合入口：时长/黑帧/静音/削波/响度/声画对齐各一条 CheckResult，
+ * 函数末尾对全部结果 applyWaivers 后返回（渲染流程与 verify 共用，plan.md 模块 A）。
+ * totalSec 用 probeMedia 实际时长，淡出区间锚定在实际文件结尾；单项异常按 fail
+ * 处理不中断其余检查项。
+ */
+export async function deepVideoChecks(
+  file: string,
+  editPlan: EditPlan,
+  scorePlan: ScorePlan | undefined,
+  waivers: WaiverRecord[],
+  artifactId?: string,
+): Promise<CheckResult[]> {
+  const probe = createLazyProbe(file);
+  const fps = editPlan.profile.fps;
+  const totalFrames = editPlan.clips.reduce((sum, clip) => sum + clip.durationFrames, 0);
+  const expectedMs = (totalFrames / fps) * 1000;
+  const fadeInSec = editPlan.fadeInFrames / fps;
+  const fadeOutSec = editPlan.fadeOutFrames / fps;
+  const results: CheckResult[] = [];
+
+  // 1. 时长：计划总帧数 / fps 换算期望，对照 ffprobe 实际时长。
+  results.push(await durationCheck("deep:video:duration", file, expectedMs, probe));
+
+  // 2. 黑帧：blackdetect 候选 → 计划淡入/淡出范围分类，有意外段即 fail。
+  results.push(
+    await segmentCheck({
+      id: "deep:video:black",
+      kind: "黑帧",
+      file,
+      detect: detectBlackSegments,
+      classify: classifyBlackSegments,
+      fadeInSec,
+      fadeOutSec,
+      probe,
+      threshold: `淡入 ${editPlan.fadeInFrames} 帧/淡出 ${editPlan.fadeOutFrames} 帧之外的黑帧判为意外（blackdetect d=${DEEP_CHECK_DEFAULTS.blackMinDurationSec}s:pix_th=0.10）`,
+      command: `ffmpeg -v info -i ${file} -vf ${BLACKDETECT_FILTER} -an -f null -`,
+      tool: "ffmpeg + blackdetect",
+    }),
+  );
+
+  // 3. 静音：silencedetect 候选 → 同一淡入/淡出范围分类。
+  results.push(
+    await segmentCheck({
+      id: "deep:video:silence",
+      kind: "静音",
+      file,
+      detect: detectSilenceSegments,
+      classify: classifySilenceSegments,
+      fadeInSec,
+      fadeOutSec,
+      probe,
+      threshold: `淡入 ${editPlan.fadeInFrames} 帧/淡出 ${editPlan.fadeOutFrames} 帧之外、时长 ≥ ${DEEP_CHECK_DEFAULTS.silenceMinDurationSec}s 且低于 ${DEEP_CHECK_DEFAULTS.silenceNoiseDb}dB 的静音判为意外`,
+      command: `ffmpeg -v info -i ${file} -af silencedetect=noise=${DEEP_CHECK_DEFAULTS.silenceNoiseDb}dB:d=${DEEP_CHECK_DEFAULTS.silenceMinDurationSec} -f null -`,
+      tool: "ffmpeg + silencedetect",
+    }),
+  );
+
+  // 4. 削波 / 5. 响度（越界 warn）/ 6. 声画对齐（计划缺失 → needs_human）。
+  results.push(await clipCheck("deep:video:clip", file));
+  results.push(await loudnessCheck("deep:video:loudness", file));
+  results.push(await alignCheck(editPlan, scorePlan));
+
+  return applyWaivers(results, waivers, artifactId);
+}
+
+/**
+ * 音频深度检查组合入口：时长/静音/削波/响度各一条 CheckResult，末尾统一豁免降级。
+ *
+ * 静音有意范围（spec F2「头尾按配乐方案首尾段落解释」的实现约定）：spec 未给出
+ * 「首尾段落」的可计算边界，这里约定为**头尾各一个小节时长**（barSec =
+ * beatsPerBar × 60 / bpm），即 [0, barSec] 与 [totalSec − barSec, totalSec] 内的
+ * 静音判为有意——与视频淡入/淡出共用同一分类规则（classifySilenceSegments）。
+ */
+export async function deepAudioChecks(
+  file: string,
+  scorePlan: ScorePlan,
+  waivers: WaiverRecord[],
+  artifactId?: string,
+): Promise<CheckResult[]> {
+  const probe = createLazyProbe(file);
+  const results: CheckResult[] = [];
+
+  // 1. 时长：期望 = scoreDurationMs(scorePlan)。
+  results.push(await durationCheck("deep:audio:duration", file, scoreDurationMs(scorePlan), probe));
+
+  // 2. 静音：头尾各 1 小节判有意（F2 实现约定，见函数注释）。
+  const barSec = (scorePlan.beatsPerBar * 60) / scorePlan.bpm;
+  results.push(
+    await segmentCheck({
+      id: "deep:audio:silence",
+      kind: "静音",
+      file,
+      detect: detectSilenceSegments,
+      classify: classifySilenceSegments,
+      fadeInSec: barSec,
+      fadeOutSec: barSec,
+      probe,
+      threshold: `头尾各 1 小节（${barSec.toFixed(3)}s = ${scorePlan.beatsPerBar} 拍 @ ${scorePlan.bpm}bpm）之外、时长 ≥ ${DEEP_CHECK_DEFAULTS.silenceMinDurationSec}s 且低于 ${DEEP_CHECK_DEFAULTS.silenceNoiseDb}dB 的静音判为意外`,
+      command: `ffmpeg -v info -i ${file} -af silencedetect=noise=${DEEP_CHECK_DEFAULTS.silenceNoiseDb}dB:d=${DEEP_CHECK_DEFAULTS.silenceMinDurationSec} -f null -`,
+      tool: "ffmpeg + silencedetect",
+    }),
+  );
+
+  // 3. 削波 / 4. 响度（越界 warn）。
+  results.push(await clipCheck("deep:audio:clip", file));
+  results.push(await loudnessCheck("deep:audio:loudness", file));
+
+  return applyWaivers(results, waivers, artifactId);
+}

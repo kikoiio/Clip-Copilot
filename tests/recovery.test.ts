@@ -317,3 +317,50 @@ test("T2：loadTaskConfig 读取合法配置，损坏文件可诊断", async () 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/* ---------- 阶段 2：v1 状态迁移 ---------- */
+
+test("T3：v1 状态读取时迁移为 v2，字段按规则填充", async () => {
+  const dir = await tempWorkspace();
+  try {
+    const v1 = {
+      schemaVersion: 1,
+      revision: 7,
+      goal: { title: "山间清晨：30–60 秒短片", minFrames: 900, maxFrames: 1800, fps: 30 },
+      phase: "done",
+      assets: [],
+      artifacts: [],
+      checkpoints: [],
+      decisions: [],
+      issues: [],
+      nextAction: "已交付",
+      updatedAt: "2026-10-02T00:00:00.000Z",
+    };
+    await writeFile(path.join(dir, "state.json"), JSON.stringify(v1, null, 2), "utf8");
+    const loaded = await loadState(dir);
+    assert.equal(loaded.state.schemaVersion, 2);
+    assert.equal(loaded.state.revision, 7);
+    assert.equal(loaded.state.goal.title, "山间清晨：30–60 秒短片");
+    assert.equal(loaded.state.goal.theme, "阶段 1 样板（配置化之前的数据）");
+    assert.deepEqual(loaded.state.goal.outputSpec, { width: 1920, height: 1080, fps: 30 });
+    assert.deepEqual(loaded.state.goal.moodArc, []);
+    // 磁盘文件保持 v1 原样（迁移只在内存中）
+    const rawOnDisk = JSON.parse(await readFile(path.join(dir, "state.json"), "utf8"));
+    assert.equal(rawOnDisk.schemaVersion, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("T3：v1 goal 缺字段时报错而非静默迁移，未知版本仍被拒", async () => {
+  const dir = await tempWorkspace();
+  try {
+    const brokenV1 = { schemaVersion: 1, revision: 1, goal: { title: "x" }, phase: "assets" };
+    await writeFile(path.join(dir, "state.json"), JSON.stringify(brokenV1), "utf8");
+    await assert.rejects(() => loadState(dir), /goal 字段不完整/);
+    await writeFile(path.join(dir, "state.json"), JSON.stringify({ schemaVersion: 99 }), "utf8");
+    await assert.rejects(() => loadState(dir), /schemaVersion/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

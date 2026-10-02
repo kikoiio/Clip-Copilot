@@ -4,6 +4,7 @@ import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promis
 import path from "node:path";
 import {
   SCHEMA_VERSION,
+  migrateStateV1,
   type ArtifactRecord,
   type CheckpointRecord,
   type WorkspaceState,
@@ -33,14 +34,22 @@ export function workspacePath(workspaceDir: string, relativePath: string): strin
   return path.join(workspaceDir, relativePath);
 }
 
-/** 结构检查；损坏或未知版本一律拒绝，不静默修复。 */
+/** 结构检查；损坏或未知版本一律拒绝，不静默修复。v1 报文在内存中迁移为 v2。 */
 export function assertValidState(value: unknown): WorkspaceState {
   if (typeof value !== "object" || value === null) {
     throw new WorkspaceError("state.json 不是对象");
   }
+  const rawVersion = (value as { schemaVersion?: unknown }).schemaVersion;
+  if (rawVersion === 1) {
+    const migrated = migrateStateV1(value);
+    if (migrated === null) {
+      throw new WorkspaceError("state.json 声明为 v1 但无法迁移");
+    }
+    return migrated;
+  }
   const state = value as WorkspaceState;
   if (state.schemaVersion !== SCHEMA_VERSION) {
-    throw new WorkspaceError(`state.json schemaVersion=${String(state.schemaVersion)}，期望 ${SCHEMA_VERSION}`);
+    throw new WorkspaceError(`state.json schemaVersion=${String(rawVersion)}，期望 ${SCHEMA_VERSION}（或可迁移的 1）`);
   }
   if (typeof state.revision !== "number" || state.revision < 0) {
     throw new WorkspaceError("state.json revision 非法");

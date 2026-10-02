@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
-    "test": "npm run -s build && node --test tests/*.test.ts",
+    "test": "npm run -s build && node --test --test-concurrency=1 tests/*.test.ts",
     "cli": "node dist/src/cli.js"
   },
   "dependencies": {

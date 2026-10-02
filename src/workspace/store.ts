@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   SCHEMA_VERSION,
@@ -14,6 +14,60 @@ import {
 export const STATE_FILE = "state.json";
 
 export class WorkspaceError extends Error {}
+
+/** Serialize handoff writers across CLI and monitor; render while holding the lock. */
+export async function writeHandoffAtomic(
+  workspaceDir: string,
+  render: () => Promise<string>,
+  mode: "always" | "existing" | "missing" = "always",
+): Promise<string | undefined> {
+  await mkdir(workspaceDir, { recursive: true });
+  const file = path.join(workspaceDir, "handoff.md");
+  const lockPath = path.join(workspaceDir, ".handoff.write.lock");
+  const deadline = Date.now() + 2_000;
+  let lock;
+  while (!lock) {
+    try {
+      lock = await open(lockPath, "wx", 0o600);
+      await lock.writeFile(String(process.pid));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const owner = await readFile(lockPath, "utf8").catch(() => "");
+      const pid = Number(owner.trim());
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ESRCH") {
+            await rm(lockPath, { force: true });
+            continue;
+          }
+        }
+      }
+      if (Date.now() >= deadline) throw new WorkspaceError(`handoff 写锁被占用：${lockPath}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  const temporary = path.join(workspaceDir, `.handoff.md.tmp-${process.pid}-${Date.now()}`);
+  try {
+    const exists = await stat(file).then(() => true, () => false);
+    if (mode === "existing" && !exists) return undefined;
+    if (mode === "missing" && exists) return undefined;
+    const content = await render();
+    if (!content.trim()) throw new WorkspaceError("handoff 内容为空，拒绝替换");
+    const out = await open(temporary, "wx", 0o600);
+    try {
+      await out.writeFile(content, "utf8");
+      await out.sync();
+    } finally {
+      await out.close();
+    }
+    await rename(temporary, file);
+    return file;
+  } finally {
+    await rm(temporary, { force: true });
+    await lock.close();
+    await rm(lockPath, { force: true });
+  }
+}
 
 /** 计算 SHA-256，用于产物指纹与素材标识。 */
 export async function sha256File(file: string): Promise<string> {

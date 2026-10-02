@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadMonitorState } from "../monitor/store.ts";
 import {
   AV_TOLERANCE_MS,
   canTransition,
@@ -47,6 +48,8 @@ import {
 import { checkProjectReferences, recordObservation } from "../verification/native.ts";
 import {
   applyWaivers,
+  checkSectionAlignment,
+  DEEP_CHECK_DEFAULTS,
   deepAudioChecks,
   deepVideoChecks,
 } from "../verification/deep.ts";
@@ -72,6 +75,7 @@ import {
   stateExists,
   workspacePath,
   createCheckpoint,
+  writeHandoffAtomic,
 } from "../workspace/store.ts";
 
 /** 仓库根目录（包含 package.json 的最近祖先），保证模板路径不依赖进程 CWD 与源码/dist 布局差异。 */
@@ -142,8 +146,10 @@ async function readPlanFile<T>(file: string): Promise<T> {
 
 /* ---------- handoff ---------- */
 
-export async function writeHandoff(loaded: Loaded): Promise<string> {
-  const { state } = loaded;
+export async function writeHandoff(loaded: Loaded, mode: "always" | "existing" | "missing" = "always"): Promise<string | undefined> {
+  return await writeHandoffAtomic(loaded.dir, async () => {
+  const fresh = await loadState(loaded.dir);
+  const { state } = fresh;
   const lines: string[] = [];
   lines.push(`# 山间清晨——当前进度与下一步`, "");
   lines.push(`- **更新时间：** ${state.updatedAt}`);
@@ -193,7 +199,7 @@ export async function writeHandoff(loaded: Loaded): Promise<string> {
     lines.push(`- ${i.at}【${i.kind}】证据：${i.evidence}；处理：${i.action}；结果：${i.result}`);
   }
   // 检查摘要（spec F5）：固定进入 handoff，宣布可交付之前机器检查过的证据一目了然。
-  const checkSummary = collectCheckSummarySync(loaded);
+  const checkSummary = collectCheckSummarySync(fresh);
   lines.push("", `## 检查摘要（深度检查）`, "");
   if (checkSummary.reportCount === 0) {
     lines.push("（尚无深度检查报告；渲染或 verify 后生成。）", "");
@@ -215,15 +221,21 @@ export async function writeHandoff(loaded: Loaded): Promise<string> {
     }
     lines.push("");
   }
+  const monitor = await loadMonitorState(loaded.dir);
+  lines.push("", `## 主动建议（${monitor.suggestions.filter((item) => item.status !== "resolved").length} 条待处理）`, "");
+  const activeSuggestions = monitor.suggestions.filter((item) => item.status !== "resolved");
+  if (activeSuggestions.length === 0) lines.push("（暂无主动建议。）");
+  for (const item of activeSuggestions.slice(0, 20)) {
+    lines.push(`- **${item.id} [${item.status}] ${item.category} / ${item.priority}**：${item.evidence}；影响：${item.impact}；下一步：${item.nextAction}`);
+  }
+  if (activeSuggestions.length > 20) lines.push(`- 其余 ${activeSuggestions.length - 20} 条见 .monitor/state.json 或 monitor suggestions 命令。`);
   lines.push("", `## 恢复说明`, "");
   lines.push(
     `在仓库根目录运行 \`npm run cli -- resume --workspace ${loaded.dir}\` 即可核对指纹并重建本文件；进度以 state.json 为唯一权威。`,
     "",
   );
-  const file = path.join(loaded.dir, "handoff.md");
-  await mkdir(loaded.dir, { recursive: true });
-  await writeFile(file, lines.join("\n"), "utf8");
-  return file;
+  return lines.join("\n");
+  }, mode);
 }
 
 /* ---------- 命令实现 ---------- */
@@ -387,6 +399,22 @@ export async function cmdEdit(args: string[]): Promise<number> {
   const plan = await readPlanFile<EditPlan>(planFile);
   const errors = validateEditPlan(plan, loaded.state.assets, loaded.state.artifacts, loaded.state.goal);
   if (errors.length > 0) throw new WorkspaceError(`剪辑方案无效：${errors.join("；")}`);
+  if (loaded.state.scorePlan) {
+    const mismatches = checkSectionAlignment(
+      plan,
+      loaded.state.scorePlan,
+      DEEP_CHECK_DEFAULTS.alignmentToleranceMs,
+    );
+    if (mismatches.length > 0) {
+      throw new WorkspaceError(
+        `剪辑方案声画对齐超出 ${DEEP_CHECK_DEFAULTS.alignmentToleranceMs}ms 容差：${mismatches.map(
+          (item) => `段落「${item.sectionName}」边界 ${item.sectionTimeSec.toFixed(3)}s，最近切点 ${item.nearestCutSec === null ? "无" : `${item.nearestCutSec.toFixed(3)}s`}，偏差 ${item.diffMs === null ? "无法计算" : `${item.diffMs.toFixed(1)}ms`}`,
+        ).join("；")}`,
+      );
+    }
+  } else {
+    console.warn("缺少配乐方案，无法自动对照声画段落；后续验证将标记待人工");
+  }
   loaded.state.editPlan = plan;
   loaded.state.nextAction = "运行 render video 生成粗剪工程与预览。";
   await persist(loaded);

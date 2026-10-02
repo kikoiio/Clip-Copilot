@@ -486,6 +486,66 @@ test("T6：剪辑计划规格与目标不一致被拒", () => {
   assert.ok(errors.some((e) => e.includes("与目标规格") && e.includes("不一致")));
 });
 
+test("阶段 4：edit --plan 提前拒绝声画错位，500ms 边界放行", async () => {
+  const dir = await tempWorkspace();
+  try {
+    const state = emptyState(sampleGoal());
+    state.phase = "video_draft";
+    state.scorePlan = sampleScorePlan();
+    state.assets.push({
+      id: "asset-001", sourceUrl: "s", licenseUrl: "l", licenseCheckedAt: "2026-10-01",
+      localPath: "assets/a.mp4", sha256: "x", bytes: 1,
+      media: { durationMs: 60000, width: 1920, height: 1080, fps: 30, hasAudio: true, hasVideo: true },
+    });
+    state.artifacts.push({
+      id: "artifact-001", kind: "audio_preview", path: "outputs/score.wav", sha256: "x",
+      createdAt: "2026-10-01T00:00:00Z", basedOn: [], status: "confirmed",
+    });
+    const aligned = sampleEditPlan("artifact-001");
+    aligned.clips = [
+      { assetId: "asset-001", sourceInMs: 0, timelineStartFrame: 0, durationFrames: 480 },
+      { assetId: "asset-001", sourceInMs: 16000, timelineStartFrame: 480, durationFrames: 480 },
+      { assetId: "asset-001", sourceInMs: 32000, timelineStartFrame: 960, durationFrames: 480 },
+    ];
+    state.editPlan = aligned;
+    await saveState(dir, state, 0);
+    const planFile = path.join(dir, "edit.json");
+    const bad = structuredClone(aligned);
+    bad.clips[0]!.durationFrames = 450;
+    bad.clips[1]!.timelineStartFrame = 450;
+    bad.clips[1]!.durationFrames = 480;
+    bad.clips[2]!.timelineStartFrame = 930;
+    bad.clips[2]!.durationFrames = 510;
+    await writeFile(planFile, JSON.stringify(bad), "utf8");
+    await assert.rejects(
+      () => cmdEdit(["--workspace", dir, "--plan", planFile]),
+      /段落「layers」边界 16\.000s.*偏差 -1000\.0ms.*段落「build」边界 32\.000s.*偏差 -1000\.0ms/,
+    );
+    const rejected = await loadState(dir);
+    assert.equal(rejected.state.revision, 1);
+    assert.deepEqual(rejected.state.editPlan, aligned);
+
+    const edge = structuredClone(aligned);
+    edge.clips[0]!.durationFrames = 465;
+    edge.clips[1]!.timelineStartFrame = 465;
+    edge.clips[1]!.durationFrames = 480;
+    edge.clips[2]!.timelineStartFrame = 945;
+    edge.clips[2]!.durationFrames = 495;
+    await writeFile(planFile, JSON.stringify(edge), "utf8");
+    await cmdEdit(["--workspace", dir, "--plan", planFile]);
+    const accepted = await loadState(dir);
+    assert.equal(accepted.state.revision, 2);
+    assert.deepEqual(accepted.state.editPlan, edge);
+
+    delete accepted.state.scorePlan;
+    await saveState(dir, accepted.state, accepted.state.revision);
+    await cmdEdit(["--workspace", dir, "--plan", planFile]);
+    assert.equal((await loadState(dir)).state.revision, 4);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("T6/C7：目标规格与模板不一致时在生成工程前报错且不产出文件", async () => {
   const dir = await tempWorkspace();
   try {

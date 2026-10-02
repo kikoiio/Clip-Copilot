@@ -1,4 +1,4 @@
-import { mkdir, readFile, cp, writeFile } from "node:fs/promises";
+import { mkdir, readFile, cp, rename, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import {
   type ScorePlan,
   type WorkspaceState,
   artifactById,
+  isArtifactStale,
   validateEditPlan,
   validateScorePlan,
   validateScorePlanAgainstGoal,
@@ -26,7 +27,12 @@ import {
   taskConfigToGoal,
 } from "./taskConfig.ts";
 import { SCORE_ADAPTER_REV, renderScoreWav, scorePlanFingerprint, writeScoreProject } from "../score/lmms.ts";
-import { editPlanFingerprint, renderVideoMp4, writeEditProject } from "../video/kdenlive.ts";
+import {
+  editPlanFingerprint,
+  KDENLIVE_ADAPTER_REV,
+  renderVideoMp4,
+  writeEditProject,
+} from "../video/kdenlive.ts";
 import { saveRunEvidence } from "../infra/process.ts";
 import {
   checkMediaBasics,
@@ -425,7 +431,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   const evidenceDir = path.join(loaded.dir, "evidence");
   if (kind === "preview") {
     const fingerprint = editPlanFingerprint(plan);
-    const tag = `editplan:${fingerprint}:a1`;
+    const tag = `editplan:${fingerprint}:a${KDENLIVE_ADAPTER_REV}`;
     const existing = findArtifactByTag(loaded.state, tag);
     if (existing) {
       console.log(`剪辑方案未变化，已有产物：${existing.id}（${existing.path}）`);
@@ -438,7 +444,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     }
     const wavFile = workspacePath(loaded.dir, soundtrack.path);
     const wavMedia = await probeMedia(wavFile);
-    const projectPath = path.join(loaded.dir, "projects", `edit-${fingerprint}-a1.kdenlive`);
+    const projectPath = path.join(loaded.dir, "projects", `edit-${fingerprint}-a${KDENLIVE_ADAPTER_REV}.kdenlive`);
     const templatePath = path.join(REPO_ROOT, "templates", "kdenlive", "base.kdenlive");
     await writeEditProject(
       plan, loaded.dir, loaded.state.assets, wavFile, wavMedia.durationMs, templatePath, projectPath,
@@ -449,7 +455,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
       kind: "kdenlive_project", file: projectPath, basedOn,
     });
     loaded.state.artifacts.push(projectArtifact);
-    const mp4Path = path.join(loaded.dir, "outputs", `preview-${fingerprint}-a1.mp4`);
+    const mp4Path = path.join(loaded.dir, "outputs", `preview-${fingerprint}-a${KDENLIVE_ADAPTER_REV}.mp4`);
     const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
     const mp4Checks = await checkMediaBasics(mp4Path, {
       hasVideo: true, hasAudio: true,
@@ -475,7 +481,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
       loaded.state.phase = "video_review";
     }
     loaded.state.nextAction = "用 checkpoint 提交粗剪检查点，然后请创作者审阅。";
-    addDecision(loaded, `粗剪 ${fingerprint} 渲染完成（a1）`, `Kdenlive 导出耗时 ${rendered.seconds.toFixed(1)}s`, "进入 video_review，等待检查点与审阅");
+    addDecision(loaded, `粗剪 ${fingerprint} 渲染完成（a${KDENLIVE_ADAPTER_REV}）`, `Kdenlive 导出耗时 ${rendered.seconds.toFixed(1)}s`, "进入 video_review，等待检查点与审阅");
     await persist(loaded);
     await writeHandoff(loaded);
     console.log(`剪辑工程: ${projectArtifact.path}`);
@@ -509,6 +515,14 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   });
   loaded.state.artifacts.push(projectArtifact);
   const mp4Path = path.join(loaded.dir, "outputs", "final.mp4");
+  // Kdenlive 命令行渲染拒绝覆盖已存在的输出文件；重开流程中先把旧终版归档移开，
+  // 保留历史字节（不静默覆盖），再渲染新终版。
+  const existingFinal = await stat(mp4Path).catch(() => null);
+  if (existingFinal && existingFinal.isFile()) {
+    const archive = `final-superseded-${Date.now()}.mp4`;
+    await rename(mp4Path, path.join(loaded.dir, "outputs", archive));
+    addDecision(loaded, "归档旧终版", `重开版本后重渲染，旧终版移动为 outputs/${archive}`, "旧交付物字节保留，新终版写入 final.mp4");
+  }
   const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
   const mp4Checks = await checkMediaBasics(mp4Path, {
     hasVideo: true, hasAudio: true,
@@ -572,6 +586,17 @@ export async function cmdVerify(args: string[]): Promise<number> {
   }
   for (const artifact of loaded.state.artifacts) {
     if (artifact.kind === "lmms_project" || artifact.kind === "kdenlive_project") {
+      // 已被更高适配器版本取代的历史工程（draft 且不带当前版本标记）不参与引用检查：
+      // 它们的文件按当时的适配器写出，重开后无法重生成，检查只会产生永久噪音。
+      const currentRev = artifact.basedOn.some((b) => b.endsWith(`:a${KDENLIVE_ADAPTER_REV}`) || b.endsWith(`:a${SCORE_ADAPTER_REV}`));
+      if (artifact.status !== "confirmed" && !currentRev) {
+        results.push({
+          id: `project:superseded:${artifact.id}`,
+          status: "pass",
+          evidence: `历史工程 ${artifact.path}（旧适配器版本，已失效），跳过引用检查；文件保留作历史记录`,
+        });
+        continue;
+      }
       results.push(...(await checkProjectReferences(workspacePath(loaded.dir, artifact.path))));
     }
     if (artifact.kind === "audio_preview" || artifact.kind === "audio_final"
@@ -715,6 +740,59 @@ export async function cmdResume(args: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * 重开已交付（done）工作区的视频版本：失效最近一次已批准粗剪检查点引用的产物
+ * 及其下游（终版工程、终版 MP4），回到 video_draft 重新渲染。
+ * 典型用途：适配器升级（如资源路径改为相对路径）后重新生成工程。
+ */
+export async function cmdReopen(args: string[]): Promise<number> {
+  const dir = requireWorkspaceArg(args);
+  const stage = getOption(args, "--stage") ?? "video";
+  if (stage !== "video") {
+    throw new WorkspaceError("目前只支持重开视频版本（--stage video）");
+  }
+  const reason = getOption(args, "--reason") ?? "重新生成视频工程";
+  const loaded = await loadWorkspace(dir);
+  if (loaded.state.phase !== "done") {
+    throw new WorkspaceError(
+      `工作区处于 ${loaded.state.phase} 阶段；reopen 只用于已交付（done）的工作区，其余阶段直接按阶段机流程修改`,
+    );
+  }
+  const checkpoint = [...loaded.state.checkpoints]
+    .filter((c) => c.phase === "video_review" && c.review === "approved")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+  if (!checkpoint) {
+    throw new WorkspaceError("找不到已批准的粗剪检查点，无法重开");
+  }
+  await checkPhaseTransition(loaded, "video_draft");
+  // 失效沿 basedOn 链传播到不动点：检查点引用的产物、以及依赖它们（或依赖本检查点）的
+  // 下游产物（终版工程、终版 MP4）。配乐等无关产物不受影响。
+  const invalidated = new Set<string>([...checkpoint.artifactIds, checkpoint.id]);
+  let count = 0;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const art of loaded.state.artifacts) {
+      if (art.status === "confirmed" && (invalidated.has(art.id) || isArtifactStale(art, invalidated))) {
+        art.status = "draft";
+        invalidated.add(art.id);
+        count += 1;
+        changed = true;
+      }
+    }
+  }
+  loaded.state.phase = "video_draft";
+  loaded.state.nextAction =
+    "运行 render video 重新生成粗剪工程与预览（新版适配器将写出可移植的相对路径），然后 checkpoint 与 review。";
+  addDecision(loaded, `重开视频版本（${checkpoint.id}）`, reason, `${count} 件已确认产物失效为 draft，回到 video_draft`);
+  await persist(loaded);
+  await writeHandoff(loaded);
+  console.log(`已重开视频版本：${count} 件产物失效为 draft，回到 video_draft`);
+  printStateSummary(loaded);
+  return 0;
+}
+
 export async function cmdStatus(args: string[]): Promise<number> {
   const dir = requireWorkspaceArg(args);
   const loaded = await loadWorkspace(dir);
@@ -739,6 +817,7 @@ export const commands: Record<string, (args: string[]) => Promise<number>> = {
   verify: cmdVerify,
   checkpoint: cmdCheckpoint,
   review: cmdReview,
+  reopen: cmdReopen,
   resume: cmdResume,
   status: cmdStatus,
 };

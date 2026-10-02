@@ -27,7 +27,7 @@ import {
   sha256File,
   stateExists,
 } from "../src/workspace/store.ts";
-import { cmdCheckpoint, cmdEdit, cmdIngest, cmdRender, cmdReview, cmdResume, cmdScore, cmdStatus, cmdInit } from "../src/workflow/coordinator.ts";
+import { cmdCheckpoint, cmdEdit, cmdIngest, cmdRender, cmdReopen, cmdReview, cmdResume, cmdScore, cmdStatus, cmdInit } from "../src/workflow/coordinator.ts";
 import { loadTaskConfig, taskConfigToGoal, validateTaskConfig, checkAssetAgainstCandidates, type TaskConfig } from "../src/workflow/taskConfig.ts";
 import type { Goal } from "../src/domain.ts";
 
@@ -539,5 +539,47 @@ test("T8：双工作区互不干扰——各自状态独立，推进其一不影
   } finally {
     await rm(dirA, { recursive: true, force: true });
     await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+/* ---------- 阶段 2 修复：reopen 与可移植工程 ---------- */
+
+test("T15：reopen 使 done 工作区回到 video_draft，失效沿 basedOn 链传播", async () => {
+  const dir = await tempWorkspace();
+  try {
+    await cmdInit(["--workspace", dir, "--config", await writeSampleConfig(dir)]);
+    const loaded = await loadState(dir);
+    loaded.state.phase = "done";
+    loaded.state.artifacts.push(
+      { id: "artifact-001", kind: "audio_preview", path: "outputs/s.wav", sha256: "x", createdAt: "2026-10-02T00:00:01Z", basedOn: ["scoreplan:1"], status: "confirmed" },
+      { id: "artifact-002", kind: "kdenlive_project", path: "projects/e.kdenlive", sha256: "x", createdAt: "2026-10-02T00:00:02Z", basedOn: ["editplan:1", "artifact-001"], status: "confirmed" },
+      { id: "artifact-003", kind: "video_preview", path: "outputs/p.mp4", sha256: "x", createdAt: "2026-10-02T00:00:03Z", basedOn: ["artifact-002"], status: "confirmed" },
+      // 终版工程通过检查点 ID 间接依赖（真实数据结构），验证失效沿间接链传播
+      { id: "artifact-004", kind: "kdenlive_project", path: "projects/final.kdenlive", sha256: "x", createdAt: "2026-10-02T00:00:04Z", basedOn: ["checkpoint-001", "artifact-001"], status: "confirmed" },
+      { id: "artifact-005", kind: "video_final", path: "outputs/final.mp4", sha256: "x", createdAt: "2026-10-02T00:00:05Z", basedOn: ["artifact-004"], status: "confirmed" },
+      { id: "artifact-006", kind: "audio_final", path: "outputs/score-final.wav", sha256: "x", createdAt: "2026-10-02T00:00:06Z", basedOn: ["artifact-001"], status: "confirmed" },
+    );
+    loaded.state.checkpoints.push({
+      id: "checkpoint-001", phase: "video_review", createdAt: "2026-10-02T00:00:07Z",
+      artifactIds: ["artifact-002", "artifact-003"], summary: "v1", nextAction: "审阅", review: "approved",
+    });
+    await saveState(dir, loaded.state, loaded.state.revision);
+
+    await cmdReopen(["--workspace", dir, "--reason", "适配器升级：资源引用改为相对路径"]);
+    const after = await loadState(dir);
+    assert.equal(after.state.phase, "video_draft");
+    const byId = new Map(after.state.artifacts.map((a) => [a.id, a]));
+    assert.equal(byId.get("artifact-002")!.status, "draft");
+    assert.equal(byId.get("artifact-003")!.status, "draft");
+    assert.equal(byId.get("artifact-004")!.status, "draft");   // 依赖检查点 ID
+    assert.equal(byId.get("artifact-005")!.status, "draft");   // 依赖失效的终版工程
+    assert.equal(byId.get("artifact-001")!.status, "confirmed"); // 配乐不受影响
+    assert.equal(byId.get("artifact-006")!.status, "confirmed"); // 无损配乐不受影响
+    assert.ok(after.state.decisions.some((d) => d.subject.includes("重开")));
+
+    // 已重开（video_draft）的工作区再次 reopen 被拒
+    await assert.rejects(() => cmdReopen(["--workspace", dir]), /只用于已交付/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

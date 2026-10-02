@@ -13,6 +13,9 @@ import { sha256File, sha256Text } from "../workspace/store.ts";
 
 export class KdenliveError extends Error {}
 
+/** 适配器版本：v2 起资源引用使用相对工程文件的路径（工作区可整体移动）。 */
+export const KDENLIVE_ADAPTER_REV = 2;
+
 export interface KdenliveTemplate {
   dom: Document;
   /** 从模板 profile 节点读出的实际规格，用于与工作区目标交叉核对。 */
@@ -98,7 +101,8 @@ interface ClipProducerInfo {
 function buildAssetProducer(
   doc: Document,
   clipIndex: number,
-  workspaceDir: string,
+  projectDir: string,
+  resourceAbs: string,
   asset: AssetRecord,
   totalAssetFrames: number,
 ): Element {
@@ -106,7 +110,9 @@ function buildAssetProducer(
   setAttributes(producer, { id: `producer_clip${clipIndex}`, in: 0, out: totalAssetFrames - 1 });
   addProperty(doc, producer, "length", String(totalAssetFrames));
   addProperty(doc, producer, "eof", "pause");
-  addProperty(doc, producer, "resource", path.resolve(workspaceDir, asset.localPath));
+  // 相对工程文件书写（MLT/Kdenlive 按工程位置解析），保证工作区整体可移动。
+  const resource = path.relative(projectDir, resourceAbs);
+  addProperty(doc, producer, "resource", resource);
   addProperty(doc, producer, "mlt_service", "avformat");
   addProperty(doc, producer, "seekable", "1");
   addProperty(doc, producer, "mute_on_pause", "0");
@@ -232,11 +238,13 @@ export async function writeEditProject(
   }
 
   // 2. 每个片段一个 producer 实例（同一素材可用多次，滤镜互不影响）
+  const projectDir = path.dirname(path.resolve(outputPath));
   const clipInfos: ClipProducerInfo[] = [];
   plan.clips.forEach((clip, index) => {
     const asset = byId.get(clip.assetId)!;
     const assetFrames = Math.max(1, framesFromMs(asset.media.durationMs, fps));
-    const producer = buildAssetProducer(doc, index, workspaceDir, asset, assetFrames);
+    const resourceAbs = path.resolve(workspaceDir, asset.localPath);
+    const producer = buildAssetProducer(doc, index, projectDir, resourceAbs, asset, assetFrames);
     if (index === 0) addFadeFilter(doc, producer, "in", plan.fadeInFrames, assetFrames - 1);
     if (index === plan.clips.length - 1) {
       addFadeFilter(doc, producer, "out", plan.fadeOutFrames, assetFrames - 1);
@@ -269,7 +277,7 @@ export async function writeEditProject(
   setAttributes(audioProducer, { id: "producer_soundtrack", in: 0, out: Math.max(0, wavFrames - 1) });
   addProperty(doc, audioProducer, "length", String(wavFrames));
   addProperty(doc, audioProducer, "eof", "pause");
-  addProperty(doc, audioProducer, "resource", path.resolve(soundtrackPath));
+  addProperty(doc, audioProducer, "resource", path.relative(projectDir, path.resolve(soundtrackPath)));
   addProperty(doc, audioProducer, "mlt_service", "avformat");
   addProperty(doc, audioProducer, "seekable", "1");
   addProperty(doc, audioProducer, "kdenlive:clipname", path.basename(soundtrackPath));

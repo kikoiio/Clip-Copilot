@@ -89,7 +89,8 @@ export const PHASE_TRANSITIONS: Record<Phase, Phase[]> = {
   video_draft: ["video_review"],
   video_review: ["final_verify", "video_draft"],
   final_verify: ["done"],
-  done: [],
+  // done → video_draft 仅由显式的 reopen 命令使用（重开已交付版本）。
+  done: ["video_draft"],
 };
 
 export function canTransition(from: Phase, to: Phase): boolean {

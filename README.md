@@ -5,15 +5,16 @@
 工作周期的任务中保持方向，并让人随时能够查看、纠正和接手。当前以 Kdenlive 与
 LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](docs/VISION.md)。
 
-## 当前阶段：首个完整样板「山间清晨短片」
+## 当前阶段：阶段 2「可复用的同类创作流程」
 
-按愿景「先用一项完整作品验证」的要求，第一阶段已经交付：TypeScript 工作流协调
-LMMS 与 Kdenlive，完成一支 30–60 秒的「山间清晨」短片，保留可继续编辑的配乐
-工程（.mmp）与剪辑工程（.kdenlive），并演练了素材缺失、导出失败与中断恢复。
-本仓库现有的代码、模板与工作区均服务于该阶段；需求、计划与验收记录见
-[docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)（spec → plan → task → checklist
-四份已批准文档）。后续阶段按
-[docs/spec_docs/vision-phases.md](docs/spec_docs/vision-phases.md) 的分阶段愿景推进。
+阶段 1 的样板「山间清晨」已于 2026-10-02 验收，记录归档于
+[docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)。阶段 2 把流程泛化：新作品由
+**任务配置**描述（标题、主题与情绪走向、时长范围、输出规格、素材候选），
+`init --config` 据此建区；配乐/剪辑方案提交时自动校验与目标的一致性。正在用两部
+新短片验证"换素材换要求、不改代码"：`workspaces/city-nightfall/`（《城市入夜》72s）
+与 `workspaces/day-to-stars/`（《从日出到星空》144s）。分阶段路线见
+[docs/spec_docs/vision-phases.md](docs/spec_docs/vision-phases.md)；阶段 2 的
+spec/plan/task/checklist 见 [docs/spec_docs/phase-2/](docs/spec_docs/phase-2/)。
 
 ## 环境
 
@@ -34,21 +35,31 @@ npm test        # 单元 + 原生集成测试（会实际调用两款软件渲�
 ## 命令顺序
 
 ```bash
-npm run cli -- init     --workspace workspaces/mountain-morning
-npm run cli -- ingest   --workspace workspaces/mountain-morning \
-  --file workspaces/mountain-morning/assets/<clip>.mp4 \
-  --source-url <Pexels 页面> --license-url https://www.pexels.com/license/
-npm run cli -- score    --workspace <ws> --plan docs/score-plan.json   # 写入配乐方案
-npm run cli -- render   --workspace <ws> score                         # 生成 .mmp + WAV
-npm run cli -- checkpoint --workspace <ws> --summary "配乐初稿 v1"      # 冻结检查点
+# 1. 写一份任务配置（参考 docs/task-configs/sample-a.json）后建区
+npm run cli -- init     --workspace workspaces/<新作品> \
+  --config docs/task-configs/<新作品>.json
+
+# 2. 素材放入 workspaces/<ws>/assets/ 后逐段登记；清单外素材必须附替换原因
+npm run cli -- ingest   --workspace workspaces/<ws> \
+  --file workspaces/<ws>/assets/<clip>.mp4 \
+  --source-url <Pexels 页面> --license-url https://www.pexels.com/license/ \
+  [--reason "<替换原因>"]
+
+# 3. 配乐方案 → 渲染 → 检查点 → 审阅
+npm run cli -- score    --workspace <ws> --plan docs/plans/<作品>-score.json
+npm run cli -- render   --workspace <ws> score                         # .mmp + WAV
+npm run cli -- checkpoint --workspace <ws> --summary "配乐初稿 v1"
 npm run cli -- review   --workspace <ws> --decision approve|changes --feedback "..."
-npm run cli -- edit     --workspace <ws> --plan docs/edit-plan.json    # 写入剪辑方案
-npm run cli -- render   --workspace <ws> video                         # 生成 .kdenlive + 预览
+
+# 4. 剪辑方案 → 粗剪 → 检查点 → 审阅 → 终版
+npm run cli -- edit     --workspace <ws> --plan docs/plans/<作品>-edit.json
+npm run cli -- render   --workspace <ws> video                         # .kdenlive + 预览
 npm run cli -- checkpoint --workspace <ws> --summary "粗剪 v1"
 npm run cli -- review   --workspace <ws> --decision approve
 npm run cli -- render   --workspace <ws> final                         # 终版 MP4
 npm run cli -- verify   --workspace <ws>                               # 全量检查
 npm run cli -- status   --workspace <ws>
+npm run cli -- reopen   --workspace <ws> --reason "<原因>"             # 重开已交付（done）工作区
 ```
 
 阶段机：`assets → score_draft → score_review → video_draft → video_review → final_verify → done`。
@@ -92,6 +103,12 @@ workspaces/mountain-morning/      样板工作区（state.json 为权威进度�
 
 ## 已知约束
 
+- Kdenlive 工程内的资源引用自适配器 v2（2026-10-02）起使用**相对工程文件的路径**
+  （`../assets/...`），整个 `workspaces/` 目录可自由移动或改名；`reopen` 命令可把
+  已交付（done）的工作区退回 `video_draft` 重新生成工程（旧终版自动归档为
+  `outputs/final-superseded-<时间戳>.mp4`）。此前的工程内嵌生成时的绝对路径，
+  目录移动后引用会失效——mountain-morning 的历史 a1 工程即属此类，已由
+  reopen + 适配器 v2 重生成修复。
 - LMMS 导出使用 `-l`（Render as a loop）：LMMS 1.2.2 非 loop 导出会在片尾多渲染
   一小节垫尾（源码 `Song::getSongEndPos` 注释确认），`-l` 让时长与工程内容一致。
 - Kdenlive 文档需要 `main_bin` 携带 `xml_retain="1"` 与
@@ -99,7 +116,26 @@ workspaces/mountain-morning/      样板工作区（state.json 为权威进度�
   720×576 PAL。
 - 渲染超时上限 30 分钟；素材下载总量上限 2 GB（`ingest` 强制检查）。
 
-## 第一阶段样板交付（2026-10-02 验收）
+## 阶段 2 交付（2026-10-02 验收，17/17 项通过）
+
+用两部新短片验证「换素材换要求、不改代码」——制作期间 `src/`、`templates/`、
+`tests/` 零改动，全部工作只新增数据文件（任务配置、素材、方案 JSON）：
+
+| 作品 | 工作区 | 终版 | 规格 |
+| --- | --- | --- | --- |
+| 《城市入夜》 | `workspaces/city-nightfall/` | `outputs/final.mp4`（72s） | 1080p30，疏离→流动→热闹 |
+| 《从日出到星空》 | `workspaces/day-to-stars/` | `outputs/final.mp4`（144s） | 1080p30，苏醒→舒展→渐缓→静谧 |
+
+- 每部含可编辑的 `.mmp`/`.kdenlive` 工程（`projects/`）、粗剪预览（`outputs/`）、
+  不可变检查点（`checkpoints/`）与素材来源记录（`evidence/`）。
+- 全部新能力经实际演练：任务配置建区、非法配置拒绝（退出码 1 指明字段）、
+  配乐/剪辑方案一致性闸门（越界与规格不符被拒）、素材候选核对（清单外替换
+  附 `--reason`）、模板规格交叉核对、双工作区隔离、v1 旧工作区兼容（基线逐行一致）。
+- 验收期间的重要输入：**创作者声明不自行创作、将创作判断委托给助手**——
+  委托模式（分阶段愿景阶段 6）的需求信号提前到达，已记入阶段 3 的启动背景。
+- 逐项验收证据见 [docs/spec_docs/phase-2/checklist.md](docs/spec_docs/phase-2/checklist.md)。
+
+## 阶段 1 样板交付（2026-10-02 验收）
 
 交付物（均在工作区 `workspaces/mountain-morning/`，交付清单与证据索引见
 `evidence/index.json`）：

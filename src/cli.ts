@@ -20,6 +20,9 @@ const HELP = `山间清晨短片工作流
   checkpoint  --workspace <目录> --summary <文本>      提交当前阶段检查点（不可变副本）
   review      --workspace <目录> --decision approve|changes [--feedback <文本>]
                                                       记录创作者对当前检查点的意见
+  reopen      --workspace <目录> [--reason <文本>]    重开已交付（done）工作区的视频版本
+                                                      （产物失效并回到 video_draft，用于适配器
+                                                      升级后重新生成工程等场景）
   resume      --workspace <目录>                      依据状态与指纹恢复，重建 handoff.md
   status      --workspace <目录>                      打印阶段、产物与下一步
 

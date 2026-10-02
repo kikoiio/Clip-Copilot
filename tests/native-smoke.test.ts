@@ -206,10 +206,12 @@ test("T14-T17：Kdenlive 工程生成、时间线与 MP4 导出", { skip: !APPIM
     const plan = editPlan30s(mapped, "artifact-001");
     const projectPath = path.join(dir, "edit-test.kdenlive");
     await writeEditProject(plan, dir, mapped, wav, wavMedia.durationMs, templatePath, projectPath, smokeGoal());
-    // 生成的工程必须引用每个素材的现存路径
+    // 生成的工程必须以相对路径引用每个素材（可移植：工作区整体可移动）
     const xml = await readFile(projectPath, "utf8");
     for (const asset of mapped) {
-      assert.ok(xml.includes(path.resolve(asset.localPath)), `缺少素材引用 ${asset.localPath}`);
+      const rel = path.relative(path.dirname(projectPath), path.resolve(asset.localPath));
+      assert.ok(xml.includes(rel), `缺少素材引用 ${rel}`);
+      assert.ok(!xml.includes(path.resolve(asset.localPath)), `不应写入绝对路径：${asset.localPath}`);
     }
     // 重叠计划被拒
     const badPlan = structuredClone(plan);

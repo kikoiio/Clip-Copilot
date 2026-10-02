@@ -257,12 +257,20 @@ export async function createCheckpoint(
   return { state: loaded.state, checkpoint, directory };
 }
 
-/** 恢复时逐项核对产物指纹；不符或缺失时返回问题清单。 */
+/** 恢复时逐项核对产物指纹；不符或缺失时返回问题清单。
+ *  同一路径存在多条记录时（重开版本后旧记录保留为历史），只核对最新一条。 */
 export async function auditArtifacts(loaded: LoadedState): Promise<
   { artifact: ArtifactRecord; problem: string }[]
 > {
-  const problems: { artifact: ArtifactRecord; problem: string }[] = [];
+  const latestByPath = new Map<string, ArtifactRecord>();
   for (const artifact of loaded.state.artifacts) {
+    const existing = latestByPath.get(artifact.path);
+    if (!existing || artifact.createdAt >= existing.createdAt) {
+      latestByPath.set(artifact.path, artifact);
+    }
+  }
+  const problems: { artifact: ArtifactRecord; problem: string }[] = [];
+  for (const artifact of latestByPath.values()) {
     const file = workspacePath(loaded.dir, artifact.path);
     const info = await stat(file).catch(() => null);
     if (!info || !info.isFile()) {

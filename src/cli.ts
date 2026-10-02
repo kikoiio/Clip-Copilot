@@ -8,9 +8,11 @@ const HELP = `山间清晨短片工作流
 用法: npm run cli -- <命令> [参数]
 
 命令:
-  init        --workspace <目录>                      初始化工作区，写入目标与阶段
+  init        --workspace <目录> --config <任务配置JSON>
+                                        依据任务配置创建新工作区（新工作区必须来自任务配置）
   ingest      --workspace <目录> --file <视频>         登记一段素材（来源与许可参数见下）
                 --source-url <URL> --license-url <URL>
+                [--reason <文本>]                     登记任务配置候选清单外的素材时必须说明替换原因
   score       --workspace <目录> [--plan <JSON>]      保存配乐方案；缺省时打印当前方案
   edit        --workspace <目录> [--plan <JSON>]      保存剪辑方案；缺省时打印当前方案
   render      --workspace <目录> score|video|final    生成工程并导出当前阶段产物

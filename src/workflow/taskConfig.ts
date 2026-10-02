@@ -3,13 +3,9 @@
  * 配置以"秒"为单位给人编写；换算为 Goal 后状态内部全用帧。
  */
 import { readFile } from "node:fs/promises";
-import { isVerifiedSpec, type Goal, type MoodNode } from "../domain.ts";
+import { isVerifiedSpec, type AssetCandidate, type Goal, type MoodNode } from "../domain.ts";
 
-export interface TaskConfigAsset {
-  sourceUrl: string;
-  licenseUrl: string;
-  note?: string;
-}
+export type { AssetCandidate };
 
 export interface TaskConfig {
   schemaVersion: 1;
@@ -18,7 +14,7 @@ export interface TaskConfig {
   moodArc: MoodNode[];
   duration: { minSeconds: number; maxSeconds: number };
   outputSpec: { width: number; height: number; fps: number };
-  assets: TaskConfigAsset[];
+  assets: AssetCandidate[];
 }
 
 type FieldErrors = string[];
@@ -151,4 +147,25 @@ export function taskConfigToGoal(config: TaskConfig): Goal {
     outputSpec: { ...config.outputSpec },
     moodArc: config.moodArc.map((node) => ({ ...node })),
   };
+}
+
+/**
+ * 候选清单核对（spec F3）：来源在清单内直接放行；
+ * 清单外素材必须附带替换原因，否则拒绝。
+ */
+export function checkAssetAgainstCandidates(
+  candidates: readonly AssetCandidate[],
+  sourceUrl: string,
+  reason?: string,
+): { allowed: true; replacement: boolean } | { allowed: false; message: string } {
+  if (candidates.some((c) => c.sourceUrl === sourceUrl)) {
+    return { allowed: true, replacement: false };
+  }
+  if (reason === undefined || reason.trim() === "") {
+    return {
+      allowed: false,
+      message: `素材来源 ${sourceUrl} 不在任务配置候选清单中；如确需替换，请加 --reason 说明原因（将记入决定记录）`,
+    };
+  }
+  return { allowed: true, replacement: true };
 }

@@ -214,10 +214,20 @@ export interface CheckResult {
   evidence: string;
 }
 
+/** 素材候选：来自任务配置，登记时用于核对来源。 */
+export interface AssetCandidate {
+  sourceUrl: string;
+  licenseUrl: string;
+  note?: string;
+}
+
 export interface WorkspaceState {
   schemaVersion: typeof SCHEMA_VERSION;
   revision: number;
   goal: Goal;
+  /** 任务配置候选清单；v1 迁移的旧工作区没有此字段，视为不做候选核对。 */
+  assetCandidates?: AssetCandidate[];
+  taskConfigPath?: string;
   phase: Phase;
   assets: AssetRecord[];
   scorePlan?: ScorePlan;

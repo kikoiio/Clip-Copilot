@@ -26,7 +26,7 @@ import {
   stateExists,
 } from "../src/workspace/store.ts";
 import { cmdCheckpoint, cmdEdit, cmdIngest, cmdRender, cmdReview, cmdResume, cmdScore, cmdStatus, cmdInit } from "../src/workflow/coordinator.ts";
-import { loadTaskConfig, taskConfigToGoal, validateTaskConfig, type TaskConfig } from "../src/workflow/taskConfig.ts";
+import { loadTaskConfig, taskConfigToGoal, validateTaskConfig, checkAssetAgainstCandidates, type TaskConfig } from "../src/workflow/taskConfig.ts";
 import type { Goal } from "../src/domain.ts";
 
 async function tempWorkspace(): Promise<string> {
@@ -409,6 +409,37 @@ test("T4：缺 --config 或非法配置时拒绝初始化，不留下半成品�
     await writeFile(bad, JSON.stringify({ schemaVersion: 1, title: "x" }), "utf8");
     await assert.rejects(() => cmdInit(["--workspace", dir, "--config", bad]), /无效/);
     assert.equal(await stateExists(dir), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/* ---------- 阶段 2：候选核对与摘要 ---------- */
+
+test("T5：候选清单外素材无原因被拒、带原因放行并标记替换", () => {
+  const candidates = [
+    { sourceUrl: "https://www.pexels.com/video/test/", licenseUrl: "https://www.pexels.com/license/" },
+  ];
+  const inList = checkAssetAgainstCandidates(candidates, "https://www.pexels.com/video/test/");
+  assert.deepEqual(inList, { allowed: true, replacement: false });
+  const blocked = checkAssetAgainstCandidates(candidates, "https://www.pexels.com/video/other/");
+  assert.equal(blocked.allowed, false);
+  if (!blocked.allowed) assert.ok(blocked.message.includes("--reason"));
+  const replacement = checkAssetAgainstCandidates(
+    candidates, "https://www.pexels.com/video/other/", "原候选不可下载",
+  );
+  assert.deepEqual(replacement, { allowed: true, replacement: true });
+});
+
+test("T5：init 后 handoff 列出候选清单与登记状态", async () => {
+  const dir = await tempWorkspace();
+  try {
+    const config = await writeSampleConfig(dir);
+    await cmdInit(["--workspace", dir, "--config", config]);
+    const handoff = await readFile(path.join(dir, "handoff.md"), "utf8");
+    assert.ok(handoff.includes("素材候选"));
+    assert.ok(handoff.includes("[待登记] https://www.pexels.com/video/test/"));
+    assert.ok(handoff.includes("黄昏海岸，从宁静到涌动"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

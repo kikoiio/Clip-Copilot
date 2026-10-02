@@ -19,7 +19,11 @@ import {
   scoreDurationMs,
 } from "../domain.ts";
 import { ingestAsset, checkAsset } from "../assets/catalog.ts";
-import { loadTaskConfig, taskConfigToGoal } from "./taskConfig.ts";
+import {
+  checkAssetAgainstCandidates,
+  loadTaskConfig,
+  taskConfigToGoal,
+} from "./taskConfig.ts";
 import { SCORE_ADAPTER_REV, renderScoreWav, scorePlanFingerprint, writeScoreProject } from "../score/lmms.ts";
 import { editPlanFingerprint, renderVideoMp4, writeEditProject } from "../video/kdenlive.ts";
 import { saveRunEvidence } from "../infra/process.ts";
@@ -117,9 +121,24 @@ export async function writeHandoff(loaded: Loaded): Promise<string> {
   lines.push(`# 山间清晨——当前进度与下一步`, "");
   lines.push(`- **更新时间：** ${state.updatedAt}`);
   lines.push(`- **阶段：** ${state.phase}（revision ${state.revision}）`);
-  lines.push(`- **目标：** ${state.goal.title}，${state.goal.minFrames}–${state.goal.maxFrames} 帧 @ ${state.goal.outputSpec.fps}fps`);
+  lines.push(`- **目标：** ${state.goal.title}——${state.goal.theme}`);
+  lines.push(
+    `- **规格：** ${state.goal.outputSpec.width}×${state.goal.outputSpec.height}@${state.goal.outputSpec.fps}，时长目标 ${state.goal.minFrames}–${state.goal.maxFrames} 帧`,
+  );
+  if (state.goal.moodArc.length > 0) {
+    lines.push(`- **情绪走向：** ${state.goal.moodArc.map((n) => `${n.name}(${n.energy})`).join(" → ")}`);
+  }
   lines.push(`- **下一步：** ${state.nextAction}`, "");
-  lines.push(`## 素材（${state.assets.length} 段）`, "");
+  if (state.assetCandidates && state.assetCandidates.length > 0) {
+    const registered = new Set(state.assets.map((a) => a.sourceUrl));
+    lines.push(`## 素材候选（任务配置：${state.taskConfigPath ?? "未知"}）`, "");
+    for (const candidate of state.assetCandidates) {
+      lines.push(`- ${registered.has(candidate.sourceUrl) ? "[已登记]" : "[待登记]"} ${candidate.sourceUrl}`);
+    }
+    lines.push("", `## 已登记素材（${state.assets.length} 段）`, "");
+  } else {
+    lines.push(`## 素材（${state.assets.length} 段）`, "");
+  }
   lines.push(`| ID | 本地文件 | 来源 | 许可 | 核验日期 | 大小 |`, "|---|---|---|---|---|---|");
   for (const a of state.assets) {
     lines.push(
@@ -162,6 +181,13 @@ export async function writeHandoff(loaded: Loaded): Promise<string> {
 function printStateSummary(loaded: Loaded): void {
   const { state } = loaded;
   console.log(`阶段: ${state.phase}（revision ${state.revision}）`);
+  console.log(`目标: ${state.goal.title}——${state.goal.theme}`);
+  console.log(
+    `规格: ${state.goal.outputSpec.width}×${state.goal.outputSpec.height}@${state.goal.outputSpec.fps}，时长目标 ${state.goal.minFrames}–${state.goal.maxFrames} 帧`,
+  );
+  if (state.goal.moodArc.length > 0) {
+    console.log(`情绪走向: ${state.goal.moodArc.map((n) => `${n.name}(${n.energy})`).join(" → ")}`);
+  }
   console.log(`素材: ${state.assets.length} 段 / 产物: ${state.artifacts.length} 件 / 检查点: ${state.checkpoints.length} 个`);
   console.log(`下一步: ${state.nextAction}`);
 }
@@ -180,6 +206,8 @@ export async function cmdInit(args: string[]): Promise<number> {
     await mkdir(path.join(dir, sub), { recursive: true });
   }
   const state = emptyState(taskConfigToGoal(config));
+  state.assetCandidates = config.assets.map((a) => ({ ...a }));
+  state.taskConfigPath = path.resolve(configFile);
   state.nextAction = `登记素材（ingest）：任务配置列出 ${config.assets.length} 个候选，见 handoff；登记清单外的素材需附替换原因。`;
   const loaded: Loaded = { dir, state };
   await saveState(dir, state, 0);
@@ -217,8 +245,16 @@ export async function cmdIngest(args: string[]): Promise<number> {
   const sourceUrl = getOption(args, "--source-url") ?? "";
   const licenseUrl = getOption(args, "--license-url")
     ?? "https://www.pexels.com/license/";
+  const reason = getOption(args, "--reason");
   if (!file) throw new WorkspaceError("缺少 --file 参数");
   const loaded = await loadWorkspace(dir);
+  // 候选清单核对（spec F3）：清单外素材必须附带替换原因。
+  let replacement = false;
+  if (loaded.state.assetCandidates && loaded.state.assetCandidates.length > 0) {
+    const check = checkAssetAgainstCandidates(loaded.state.assetCandidates, sourceUrl, reason);
+    if (!check.allowed) throw new WorkspaceError(check.message);
+    replacement = check.replacement;
+  }
   const totalBytes = loaded.state.assets.reduce((sum, a) => sum + a.bytes, 0);
   const record = await ingestAsset(loaded.dir, path.join(loaded.dir, "assets"), loaded.state.assets, {
     file,
@@ -227,6 +263,14 @@ export async function cmdIngest(args: string[]): Promise<number> {
     totalBytesSoFar: totalBytes,
   });
   loaded.state.assets.push(record);
+  if (replacement) {
+    addDecision(
+      loaded,
+      "素材替换",
+      reason ?? "",
+      `登记清单外素材 ${record.id}（${sourceUrl}），替代候选清单中的选择`,
+    );
+  }
   loaded.state.nextAction =
     loaded.state.assets.length >= 3
       ? "素材充足：用 score --plan 保存配乐方案。"

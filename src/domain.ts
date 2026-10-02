@@ -3,7 +3,7 @@
  * 时间约定：视频用 30 帧/秒整数帧；音乐用节拍与小节（1 小节 = 4 拍）。
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const FPS = 30;
 export const MIN_FRAMES = 900;
@@ -12,6 +12,68 @@ export const MAX_FRAMES = 1800;
 export const AV_TOLERANCE_MS = 1000;
 /** 素材下载总量默认上限：2 GB。 */
 export const MAX_TOTAL_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** 已验证的输出规格注册表：任务配置与剪辑计划只能从中取值。 */
+export const VERIFIED_SPECS: readonly { width: number; height: number; fps: number }[] = [
+  { width: 1920, height: 1080, fps: 30 },
+];
+
+export function isVerifiedSpec(spec: { width: number; height: number; fps: number }): boolean {
+  return VERIFIED_SPECS.some(
+    (s) => s.width === spec.width && s.height === spec.height && s.fps === spec.fps,
+  );
+}
+
+/** 情绪走向节点：energy 沿用 ScoreSection 的 0–2 标度，走向由节点顺序体现。 */
+export interface MoodNode {
+  name: string;
+  energy: number;
+}
+
+/** 作品目标：来自任务配置，是工作区状态的一等字段。 */
+export interface Goal {
+  title: string;
+  theme: string;
+  minFrames: number;
+  maxFrames: number;
+  outputSpec: { width: number; height: number; fps: number };
+  /** 为空表示不做自动情绪校验（阶段 1 迁移来的旧工作区）。 */
+  moodArc: MoodNode[];
+}
+
+/**
+ * 阶段 1 的 v1 状态在读取时迁移为 v2：目标补齐 theme/outputSpec/moodArc。
+ * 只在内存中生效，下次保存自然写出 v2；不是 v1 报文时返回 null。
+ */
+export function migrateStateV1(raw: unknown): WorkspaceState | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const candidate = raw as Record<string, unknown>;
+  if (candidate.schemaVersion !== 1) return null;
+  const goal = candidate.goal as
+    | { title?: unknown; minFrames?: unknown; maxFrames?: unknown; fps?: unknown }
+    | undefined;
+  if (
+    !goal ||
+    typeof goal.title !== "string" ||
+    typeof goal.minFrames !== "number" ||
+    typeof goal.maxFrames !== "number" ||
+    typeof goal.fps !== "number"
+  ) {
+    throw new Error("v1 state.json 的 goal 字段不完整，无法迁移");
+  }
+  return {
+    ...(candidate as unknown as WorkspaceState),
+    schemaVersion: 2,
+    goal: {
+      title: goal.title,
+      theme: "阶段 1 样板（配置化之前的数据）",
+      minFrames: goal.minFrames,
+      maxFrames: goal.maxFrames,
+      outputSpec: { width: 1920, height: 1080, fps: goal.fps },
+      moodArc: [],
+    },
+  };
+}
 
 export type Phase =
   | "assets"
@@ -155,7 +217,7 @@ export interface CheckResult {
 export interface WorkspaceState {
   schemaVersion: typeof SCHEMA_VERSION;
   revision: number;
-  goal: { title: string; minFrames: number; maxFrames: number; fps: number };
+  goal: Goal;
   phase: Phase;
   assets: AssetRecord[];
   scorePlan?: ScorePlan;

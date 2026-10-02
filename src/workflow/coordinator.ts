@@ -116,7 +116,7 @@ export async function writeHandoff(loaded: Loaded): Promise<string> {
   lines.push(`# 山间清晨——当前进度与下一步`, "");
   lines.push(`- **更新时间：** ${state.updatedAt}`);
   lines.push(`- **阶段：** ${state.phase}（revision ${state.revision}）`);
-  lines.push(`- **目标：** ${state.goal.title}，${state.goal.minFrames}–${state.goal.maxFrames} 帧 @ ${state.goal.fps}fps`);
+  lines.push(`- **目标：** ${state.goal.title}，${state.goal.minFrames}–${state.goal.maxFrames} 帧 @ ${state.goal.outputSpec.fps}fps`);
   lines.push(`- **下一步：** ${state.nextAction}`, "");
   lines.push(`## 素材（${state.assets.length} 段）`, "");
   lines.push(`| ID | 本地文件 | 来源 | 许可 | 核验日期 | 大小 |`, "|---|---|---|---|---|---|");
@@ -453,7 +453,7 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
   const rendered = await renderVideoMp4(projectPath, mp4Path, evidenceDir);
   const mp4Checks = await checkMediaBasics(mp4Path, {
     hasVideo: true, hasAudio: true, width: 1920, height: 1080, fps: 30,
-    minDurationMs: loaded.state.goal.minFrames / loaded.state.goal.fps * 1000 - AV_TOLERANCE_MS,
+    minDurationMs: loaded.state.goal.minFrames / loaded.state.goal.outputSpec.fps * 1000 - AV_TOLERANCE_MS,
   });
   const black = await detectBlackSegments(mp4Path);
   const silence = await detectSilenceSegments(mp4Path);

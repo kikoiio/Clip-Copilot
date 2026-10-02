@@ -1,8 +1,19 @@
-# 山间清晨短片工作流
+# AI 创作工作台
 
-用 TypeScript 工作流协调 LMMS 与 Kdenlive，交付一支 30–60 秒的「山间清晨」短片，
-同时保留可继续编辑的配乐工程（.mmp）与剪辑工程（.kdenlive）。规格见
-[spec_docs/](spec_docs/)（spec → plan → task → checklist 四份已批准文档）。
+让 AI 成为持续在创作工作区工作的搭档：理解创作目标，使用本机已有的创作软件推进
+项目，依据实际产物（工程能否打开、媒体是否缺失、渲染是否成功）验证结果，在跨多个
+工作周期的任务中保持方向，并让人随时能够查看、纠正和接手。当前以 Kdenlive 与
+LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](docs/VISION.md)。
+
+## 当前阶段：首个完整样板「山间清晨短片」
+
+按愿景「先用一项完整作品验证」的要求，第一阶段已经交付：TypeScript 工作流协调
+LMMS 与 Kdenlive，完成一支 30–60 秒的「山间清晨」短片，保留可继续编辑的配乐
+工程（.mmp）与剪辑工程（.kdenlive），并演练了素材缺失、导出失败与中断恢复。
+本仓库现有的代码、模板与工作区均服务于该阶段；需求、计划与验收记录见
+[docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)（spec → plan → task → checklist
+四份已批准文档）。后续阶段按
+[docs/spec_docs/vision-phases.md](docs/spec_docs/vision-phases.md) 的分阶段愿景推进。
 
 ## 环境
 
@@ -68,6 +79,9 @@ npm run cli -- resume --workspace workspaces/mountain-morning
 ## 目录
 
 ```
+docs/VISION.md                    项目愿景与长期判断标准
+docs/spec_docs/                   分阶段愿景（vision-phases.md）与各阶段文档（phase-1/ 等）
+docs/score-plan.json、edit-plan.json  样板采用的配乐与剪辑方案
 templates/lmms/base.mmp           经 LMMS 1.2.2 渲染验证的最小模板
 templates/kdenlive/base.kdenlive  经 Kdenlive 26.08.1 渲染验证的最小模板
 testmedia/                        仅用于兼容性测试的生成画面（不进入成片）
@@ -85,7 +99,7 @@ workspaces/mountain-morning/      样板工作区（state.json 为权威进度�
   720×576 PAL。
 - 渲染超时上限 30 分钟；素材下载总量上限 2 GB（`ingest` 强制检查）。
 
-## 样板交付（2026-10-02 验收）
+## 第一阶段样板交付（2026-10-02 验收）
 
 交付物（均在工作区 `workspaces/mountain-morning/`，交付清单与证据索引见
 `evidence/index.json`）：
@@ -102,7 +116,7 @@ workspaces/mountain-morning/      样板工作区（state.json 为权威进度�
 
 - 验收状态：checklist 19 项中 15 项通过；C2/C4（两款软件内修改副本）与
   C7/C14（真实反馈流程）待创作者执行，C11 的主观满意度待创作者复核。
-  逐项证据见 [spec_docs/checklist.md](spec_docs/checklist.md)。
+  逐项证据见 [docs/spec_docs/phase-1/checklist.md](docs/spec_docs/phase-1/checklist.md)。
 - 故障演练：素材缺失（T34）、导出失败（T35）、中断恢复（T36）均通过，
   已确认版本指纹未变。
 - 继续编辑：直接用软件打开上述工程即可；助手侧修改请走

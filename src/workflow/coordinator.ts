@@ -618,10 +618,10 @@ export async function cmdVerify(args: string[]): Promise<number> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(results, null, 2), "utf8");
   const failed = results.filter((r) => r.status === "fail");
-  const pending = results.filter((r) => r.status === "needs_observation");
-  console.log(`检查 ${results.length} 项：通过 ${results.length - failed.length - pending.length}，失败 ${failed.length}，待观察 ${pending.length}。证据：${file}`);
+  const pending = results.filter((r) => r.status === "needs_observation" || r.status === "needs_human");
+  console.log(`检查 ${results.length} 项：通过 ${results.length - failed.length - pending.length}，失败 ${failed.length}，待人工 ${pending.length}。证据：${file}`);
   for (const f of failed) console.log(`  [失败] ${f.id}: ${f.evidence}`);
-  for (const p of pending) console.log(`  [待观察] ${p.id}: ${p.evidence}`);
+  for (const p of pending) console.log(`  [待人工] ${p.id}: ${p.evidence}`);
   return failed.length > 0 ? 1 : 0;
 }
 

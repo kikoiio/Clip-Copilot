@@ -323,11 +323,12 @@ test("T18/T19：元数据、完整解码、黑帧、静音与音量检查", asyn
   }
 });
 
-test("T20：无 GUI 观察时保持 needs_observation", async () => {
+test("T20：无 GUI 观察时标注 needs_human（必须人来）", async () => {
   const dir = await tempDir("mm-obs-");
   try {
     const result = await recordObservation(dir, "lmms-edit", "LMMS 工程", undefined);
-    assert.equal(result.status, "needs_observation");
+    assert.equal(result.status, "needs_human");
+    assert.ok(result.evidence.includes("必须人来"), `证据应注明「必须人来」，实际：${result.evidence}`);
     const withObs = await recordObservation(dir, "lmms-edit", "LMMS 工程", {
       action: "移动音符并保存",
       observedResult: "副本重开后音符位置已变化",

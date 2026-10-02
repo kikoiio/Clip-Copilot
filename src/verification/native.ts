@@ -87,7 +87,8 @@ export interface ObservationInput {
 
 /**
  * 把一次真实的软件内观察（打开、修改副本、保存、重开）记录为证据文件。
- * 没有观察到结果时返回 needs_observation——绝不能仅凭 XML 正确就给 pass。
+ * 没有观察到结果时返回 needs_human——无法自动验证的项必须人来，
+ * 绝不能仅凭 XML 正确就给 pass。（needs_observation 仅作为旧证据的兼容别名保留。）
  */
 export async function recordObservation(
   evidenceDir: string,
@@ -98,8 +99,8 @@ export async function recordObservation(
   if (!observation || observation.observedResult.trim() === "") {
     return {
       id: `observation:${name}`,
-      status: "needs_observation",
-      evidence: `${subject}：尚未有软件内的实际观察记录。需要在 LMMS/Kdenlive 中打开、修改副本并保存后，用观察结果更新本项。`,
+      status: "needs_human",
+      evidence: `${subject}：尚未有软件内的实际观察记录。需要在 LMMS/Kdenlive 中打开、修改副本并保存后，用观察结果更新本项。此项必须人来，机器无法代替。`,
     };
   }
   await mkdir(evidenceDir, { recursive: true });

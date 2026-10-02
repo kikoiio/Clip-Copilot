@@ -204,12 +204,31 @@ export interface IssueRecord {
   result: string;
 }
 
-export type CheckStatus = "pass" | "fail" | "needs_observation";
+export type CheckStatus = "pass" | "fail" | "warn" | "needs_observation" | "needs_human";
 
 export interface CheckResult {
   id: string;
   status: CheckStatus;
   evidence: string;
+  // 阶段 3 深度检查必须填写：判定阈值、实际命令与工具版本，保证结果可复现（N3）。
+  threshold?: string;
+  command?: string;
+  tool?: string;
+}
+
+/** 对一条机器检查结论的显式豁免：记录原因后该检查项降级为 warn，不再阻塞。 */
+export interface WaiverRecord {
+  at: string;
+  /** 被豁免的检查项 ID，如 "deep:video:black:unexpected"。 */
+  checkId: string;
+  /** 限定到产物；缺省表示该检查项在所有产物上豁免。 */
+  artifactId?: string;
+  reason: string;
+}
+
+/** 旧状态无 waivers 字段时按空处理（N1 兼容）。 */
+export function waiversOf(state: WorkspaceState): WaiverRecord[] {
+  return state.waivers ?? [];
 }
 
 /** 素材候选：来自任务配置，登记时用于核对来源。 */
@@ -234,6 +253,8 @@ export interface WorkspaceState {
   checkpoints: CheckpointRecord[];
   decisions: DecisionRecord[];
   issues: IssueRecord[];
+  /** 机器检查豁免记录；v2 早期状态无此字段，视为无豁免。 */
+  waivers?: WaiverRecord[];
   nextAction: string;
   updatedAt: string;
 }

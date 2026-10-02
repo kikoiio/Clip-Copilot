@@ -192,6 +192,8 @@ export interface CheckpointResult {
 
 /**
  * 创建检查点：把引用的产物复制到 checkpoints/<id>/，之后该目录不再修改。
+ * 传入 reportPaths 时，把 evidence 下的检查报告 JSON 一并冻结进检查点目录，
+ * 并在 manifest 登记 reports 数组（报告属检查点材料的固定部分，spec F5/AC4）。
  * 重复提交时先核对已有指纹；不同内容会报错，不会覆盖旧版本。
  */
 export async function createCheckpoint(
@@ -203,6 +205,8 @@ export async function createCheckpoint(
     nextAction: string;
     review?: CheckpointRecord["review"];
     feedback?: string;
+    /** 检查报告 JSON 的绝对或工作区相对路径；缺省时不冻结报告，行为与旧版完全一致。 */
+    reportPaths?: string[];
   },
 ): Promise<CheckpointResult> {
   const phase = loaded.state.phase;
@@ -243,16 +247,47 @@ export async function createCheckpoint(
       await rm(absoluteDir, { recursive: true, force: true });
       throw new WorkspaceError(`检查点副本指纹不符（${id}），已回滚`);
     }
-    // 摘要与指纹清单，供脱离会话后审计。
-    const manifest = {
-      checkpoint,
-      artifacts: checkpoint.artifactIds.map((aid) => {
-        const a = byId.get(aid)!;
-        return { id: a.id, kind: a.kind, file: path.basename(a.path), sha256: a.sha256 };
-      }),
-    };
-    await writeFile(path.join(absoluteDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
   }
+  // 冻结检查报告：逐份复制进检查点目录并核对指纹；
+  // 材料缺失、文件名重复或复制不完整都属于材料不齐，整体回滚并报错（不静默跳过）。
+  const reports: { file: string; sha256: string }[] = [];
+  if (input.reportPaths !== undefined) {
+    const seen = new Set<string>();
+    for (const reportPath of input.reportPaths) {
+      const source = workspacePath(loaded.dir, reportPath);
+      const info = await stat(source).catch(() => null);
+      if (!info || !info.isFile()) {
+        await rm(absoluteDir, { recursive: true, force: true });
+        throw new WorkspaceError(`检查点引用的检查报告缺失或不是文件：${reportPath}`);
+      }
+      const name = path.basename(source);
+      if (seen.has(name)) {
+        await rm(absoluteDir, { recursive: true, force: true });
+        throw new WorkspaceError(`检查报告文件名重复（${name}），会在检查点目录内相互覆盖，已回滚`);
+      }
+      seen.add(name);
+      const copied = path.join(absoluteDir, name);
+      await cp(source, copied);
+      const copiedHash = await sha256File(copied);
+      const sourceHash = await sha256File(source);
+      if (copiedHash !== sourceHash) {
+        await rm(absoluteDir, { recursive: true, force: true });
+        throw new WorkspaceError(`检查点检查报告副本指纹不符（${name}），已回滚`);
+      }
+      reports.push({ file: name, sha256: copiedHash });
+    }
+  }
+  // 摘要与指纹清单，供脱离会话后审计。
+  const manifest = {
+    checkpoint,
+    artifacts: checkpoint.artifactIds.map((aid) => {
+      const a = byId.get(aid)!;
+      return { id: a.id, kind: a.kind, file: path.basename(a.path), sha256: a.sha256 };
+    }),
+    // 未传 reportPaths 时不写 reports 字段，保持旧 manifest 结构不变。
+    ...(input.reportPaths !== undefined ? { reports } : {}),
+  };
+  await writeFile(path.join(absoluteDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
   loaded.state.checkpoints.push(checkpoint);
   return { state: loaded.state, checkpoint, directory };
 }

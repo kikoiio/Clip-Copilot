@@ -19,6 +19,7 @@ import {
   validateScorePlan,
   validateScorePlanAgainstGoal,
   scoreDurationMs,
+  waiversOf,
 } from "../domain.ts";
 import { ingestAsset, checkAsset } from "../assets/catalog.ts";
 import {
@@ -33,7 +34,7 @@ import {
   renderVideoMp4,
   writeEditProject,
 } from "../video/kdenlive.ts";
-import { saveRunEvidence } from "../infra/process.ts";
+import { runFfmpeg, saveRunEvidence } from "../infra/process.ts";
 import {
   checkMediaBasics,
   detectBlackSegments,
@@ -42,6 +43,8 @@ import {
   probeMedia,
 } from "../verification/media.ts";
 import { checkProjectReferences } from "../verification/native.ts";
+import { deepAudioChecks, deepVideoChecks } from "../verification/deep.ts";
+import { buildReport, writeCheckReport, type DeepCheckReport } from "../verification/report.ts";
 import {
   WorkspaceError,
   auditArtifacts,
@@ -351,6 +354,56 @@ function hasPendingCheckpoint(loaded: Loaded, phase: "score_review" | "video_rev
   return loaded.state.checkpoints.some((c) => c.phase === phase && c.review === "pending");
 }
 
+/* ---------- 渲染后深度检查（三处渲染流程共用挂接） ---------- */
+
+/** ffmpeg 版本缓存：模块级变量避免每次渲染重复调用 ffmpeg -version。 */
+let cachedToolVersions: Record<string, string> | undefined;
+
+/**
+ * 采集工具版本（报告 toolVersions 字段，尽力采集）：解析 ffmpeg -version 首行；
+ * 任何失败留空字符串，不阻塞渲染。
+ */
+async function collectToolVersions(): Promise<Record<string, string>> {
+  if (cachedToolVersions !== undefined) return cachedToolVersions;
+  let ffmpegVersion = "";
+  try {
+    const result = await runFfmpeg(["-version"], { timeoutMs: 60_000 });
+    const firstLine = result.stdout.split("\n")[0]?.trim() ?? "";
+    ffmpegVersion = /^ffmpeg version (\S+)/.exec(firstLine)?.[1] ?? "";
+  } catch {
+    // 采集失败留空字符串（尽力采集，不阻塞渲染）。
+  }
+  cachedToolVersions = { ffmpeg: ffmpegVersion };
+  return cachedToolVersions;
+}
+
+/**
+ * 三处渲染流程共用的深度检查挂接（spec F5/F6）：必须在产物文件已生成之后调用。
+ * 组合入口（deepAudioChecks/deepVideoChecks）内部已按项兜底为 fail，此处再兜一层：
+ * 入口自身抛异常转成一条 fail 结果，绝不因深度检查异常让渲染崩溃或静默跳过。
+ * 组装报告落盘 evidence/ 并在控制台打印摘要一行；返回报告供调用方做 fail/warn 处置。
+ */
+async function runRenderDeepChecks(
+  loaded: Loaded,
+  target: { targetArtifactId: string; targetFile: string; targetKind: string },
+  fallbackId: string,
+  checks: () => Promise<CheckResult[]>,
+): Promise<DeepCheckReport> {
+  const results = await checks().catch((err: unknown): CheckResult[] => [
+    {
+      id: fallbackId,
+      status: "fail",
+      evidence: `深度检查执行异常：${err instanceof Error ? err.message : String(err)}`,
+    },
+  ]);
+  const report = buildReport(target, results, await collectToolVersions());
+  const reportFile = await writeCheckReport(path.join(loaded.dir, "evidence"), report);
+  console.log(
+    `深度检查：pass ${report.summary.pass} / warn ${report.summary.warn} / fail ${report.summary.fail}，报告 ${path.relative(loaded.dir, reportFile)}`,
+  );
+  return report;
+}
+
 async function runScoreRender(loaded: Loaded): Promise<number> {
   // 检查点提交前允许重新渲染（例如削波修正）；提交后必须走 review 流程。
   const phase = loaded.state.phase;
@@ -395,13 +448,29 @@ async function runScoreRender(loaded: Loaded): Promise<number> {
     basedOn: [projectArtifact.id, tag],
   });
   loaded.state.artifacts.push(wavArtifact);
-  if (!allPass) {
+  // 深度检查（spec F5/F6）：产物已生成，立即检查并落盘报告；fail 阻塞、warn 记录不阻塞。
+  const deepReport = await runRenderDeepChecks(
+    loaded,
+    { targetArtifactId: wavArtifact.id, targetFile: wavArtifact.path, targetKind: "audio_preview" },
+    "deep:audio",
+    () => deepAudioChecks(wavPath, plan, waiversOf(loaded.state), wavArtifact.id),
+  );
+  const hasFail = deepReport.summary.fail > 0;
+  if (!allPass || hasFail) {
     const failed = wavChecks.filter((c) => c.status === "fail");
+    const deepFailed = deepReport.results.filter((r) => r.status === "fail");
     addIssue(loaded, "render_score_failed", failed.map((c) => `${c.id}: ${c.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
+    if (deepFailed.length > 0) {
+      addIssue(loaded, "deep_check_fail", deepFailed.map((r) => `${r.id}: ${r.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
+    }
     await persist(loaded);
     await writeHandoff(loaded);
-    console.error(`配乐渲染检查未通过：${failed.map((c) => c.id).join(", ")}`);
+    console.error(`配乐渲染检查未通过：${[...failed, ...deepFailed].map((c) => c.id).join(", ")}`);
     return 1;
+  }
+  // 深度检查告警（如响度越界）逐条记录，不阻塞渲染。
+  for (const item of deepReport.results.filter((r) => r.status === "warn")) {
+    addIssue(loaded, "deep_check_warn", `${item.id}: ${item.evidence}`, "记录告警，不阻塞", "渲染继续");
   }
   if (loaded.state.phase === "score_draft") {
     await checkPhaseTransition(loaded, "score_review");
@@ -468,13 +537,30 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
       kind: "video_preview", file: mp4Path, basedOn: [projectArtifact.id, tag],
     });
     loaded.state.artifacts.push(mp4Artifact);
-    if (!allPass) {
+    // 深度检查（spec F5/F6）：产物已生成，立即检查并落盘报告；scorePlan 缺失时
+    // deepVideoChecks 的对齐项降级为 needs_human，不阻塞。
+    const deepReport = await runRenderDeepChecks(
+      loaded,
+      { targetArtifactId: mp4Artifact.id, targetFile: mp4Artifact.path, targetKind: "video_preview" },
+      "deep:video",
+      () => deepVideoChecks(mp4Path, plan, loaded.state.scorePlan, waiversOf(loaded.state), mp4Artifact.id),
+    );
+    const hasFail = deepReport.summary.fail > 0;
+    if (!allPass || hasFail) {
       const failed = mp4Checks.filter((c) => c.status === "fail");
+      const deepFailed = deepReport.results.filter((r) => r.status === "fail");
       addIssue(loaded, "render_video_failed", failed.map((c) => `${c.id}: ${c.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
+      if (deepFailed.length > 0) {
+        addIssue(loaded, "deep_check_fail", deepFailed.map((r) => `${r.id}: ${r.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
+      }
       await persist(loaded);
       await writeHandoff(loaded);
-      console.error(`粗剪渲染检查未通过：${failed.map((c) => c.id).join(", ")}`);
+      console.error(`粗剪渲染检查未通过：${[...failed, ...deepFailed].map((c) => c.id).join(", ")}`);
       return 1;
+    }
+    // 深度检查告警（如响度越界）逐条记录，不阻塞渲染。
+    for (const item of deepReport.results.filter((r) => r.status === "warn")) {
+      addIssue(loaded, "deep_check_warn", `${item.id}: ${item.evidence}`, "记录告警，不阻塞", "渲染继续");
     }
     if (loaded.state.phase === "video_draft") {
       await checkPhaseTransition(loaded, "video_review");
@@ -545,13 +631,30 @@ async function runVideoRender(loaded: Loaded, kind: "preview" | "final"): Promis
     JSON.stringify({ blackSegments: black, silenceSegments: silence, peakVolumeDb: peak }, null, 2),
     "utf8",
   );
-  if (!allPass) {
+  // 深度检查（spec F5/F6）：产物已生成，立即检查并落盘报告；fail 时与现有失败路径
+  // 一致（addIssue + persist + writeHandoff + 返回 1），不进入 done。
+  const deepReport = await runRenderDeepChecks(
+    loaded,
+    { targetArtifactId: mp4Artifact.id, targetFile: mp4Artifact.path, targetKind: "video_final" },
+    "deep:video",
+    () => deepVideoChecks(mp4Path, plan, loaded.state.scorePlan, waiversOf(loaded.state), mp4Artifact.id),
+  );
+  const hasFail = deepReport.summary.fail > 0;
+  if (!allPass || hasFail) {
     const failed = mp4Checks.filter((c) => c.status === "fail");
+    const deepFailed = deepReport.results.filter((r) => r.status === "fail");
     addIssue(loaded, "render_final_failed", failed.map((c) => `${c.id}: ${c.evidence}`).join("；"), "保留日志", "未登记为可交付状态，阶段未推进");
+    if (deepFailed.length > 0) {
+      addIssue(loaded, "deep_check_fail", deepFailed.map((r) => `${r.id}: ${r.evidence}`).join("；"), "保留日志，等待方案修正后重试", "未登记为可交付状态，阶段未推进");
+    }
     await persist(loaded);
     await writeHandoff(loaded);
-    console.error(`终版检查未通过：${failed.map((c) => c.id).join(", ")}`);
+    console.error(`终版检查未通过：${[...failed, ...deepFailed].map((c) => c.id).join(", ")}`);
     return 1;
+  }
+  // 深度检查告警（如响度越界）逐条记录，不阻塞渲染。
+  for (const item of deepReport.results.filter((r) => r.status === "warn")) {
+    addIssue(loaded, "deep_check_warn", `${item.id}: ${item.evidence}`, "记录告警，不阻塞", "渲染继续");
   }
   await checkPhaseTransition(loaded, "done");
   loaded.state.phase = "done";

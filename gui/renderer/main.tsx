@@ -31,7 +31,11 @@ function App() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
-  const [tab, setTab] = useState<Tab>("dashboard");
+  // 开发钩子：GUI_TAB=<tab> 指定初始页签（自动化截图检查用），正常启动无感知。
+  const [tab, setTab] = useState<Tab>(() => {
+    const initial = new URLSearchParams(window.location.search).get("tab");
+    return TABS.some((item) => item.id === initial) ? initial as Tab : "dashboard";
+  });
   const [error, setError] = useState<string | null>(null);
 
   const refreshWorkspaces = useCallback(async () => {

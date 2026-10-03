@@ -16,6 +16,9 @@ LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](
 spec/plan/task/checklist 见 [docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)
 至 [phase-4/](docs/spec_docs/phase-4/)。
 
+平行于阶段路线，**图形工作台（GUI 平行专项）**已于 2026-10-03 完成开发
+（见下文「图形工作台」与 [docs/spec_docs/phase-gui/](docs/spec_docs/phase-gui/)）。
+
 ## 环境
 
 - Node.js ≥ 24、FFmpeg 8（`ffmpeg`/`ffprobe` 在 PATH）
@@ -122,6 +125,30 @@ npm run cli -- monitor metrics --workspace workspaces/<ws>
   监测器重建并核验（非空、修订号、建议摘要），成功与否都留修复记录。
 - **多工作区隔离**：单工作区扫描/通知失败不影响其他工作区；同区二次启动被
   运行锁拒绝，确认旧进程已死可安全重启。
+
+## 图形工作台（GUI 平行专项）
+
+Electron 桌面应用，让创作者不进终端也能看进度、做决策、听配乐、看片子：
+
+```bash
+npm run gui      # 首次会先构建（主进程 tsc + 渲染进程 vite），随后打开桌面窗口
+```
+
+- **总览**：多工作区阶段机、计数、深度检查摘要与下一步，与 CLI `status` 同口径。
+- **产物与预览**：直接播放成片/预览（MP4）、试听配乐（WAV），查看检查点
+  manifest 指纹与逐项验证报告，一键定位文件目录。
+- **动作**：review/checkpoint/waive/observe/reopen/监测配置与建议处理，提交前
+  显示「将会发生什么」，确认后才执行——与 CLI 走同一实现、同一门禁，无旁路。
+- **建议**：GUI 运行期间内嵌监测引擎，建议实时刷新；与 CLI `monitor run`
+  通过运行锁互斥（同一工作区同时只有一个监测者）。
+- **AI 助手**：设置中接入模型（预设智谱 GLM/OpenAI/Anthropic/Ollama + 自定义
+  OpenAI 兼容端点；API Key 经 safeStorage 加密只存本机用户配置目录）。助手依据
+  工作区真实状态回答问题，可发起写操作命令，但每条先弹确认卡、经你批准才执行；
+  未配置模型时仅 AI 面板不可用，其余功能照常。
+- `init`/`ingest`/方案编辑仍走 CLI；AI 写操作集合 = 人工动作 + `render`。
+  spec/plan/task/checklist 与验收证据见
+  [docs/spec_docs/phase-gui/](docs/spec_docs/phase-gui/)（其中 AC 全量演练
+  待创作者执行）。
 
 ## 目录
 

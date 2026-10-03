@@ -55,7 +55,9 @@ async function createWindow(preloadPath: string): Promise<BrowserWindow> {
     autoHideMenuBar: true,
     webPreferences: { preload: preloadPath },
   });
-  await win.loadFile(RENDERER_INDEX);
+  // 开发钩子：GUI_TAB 指定初始页签（自动化截图检查用）。
+  const initialTab = process.env.GUI_TAB;
+  await win.loadFile(RENDERER_INDEX, initialTab ? { query: { tab: initialTab } } : undefined);
   return win;
 }
 

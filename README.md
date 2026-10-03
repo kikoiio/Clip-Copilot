@@ -16,8 +16,9 @@ LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](
 spec/plan/task/checklist 见 [docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)
 至 [phase-4/](docs/spec_docs/phase-4/)。
 
-平行于阶段路线，**图形工作台（GUI 平行专项）**已于 2026-10-03 完成开发
-（见下文「图形工作台」与 [docs/spec_docs/phase-gui/](docs/spec_docs/phase-gui/)）。
+平行于阶段路线，**图形工作台（GUI 平行专项）**已于 2026-10-03 完成开发与验收
+（自动化项 29/31 通过，听感与真实模型复核两项待创作者；见下文「图形工作台」与
+[docs/spec_docs/phase-gui/](docs/spec_docs/phase-gui/)）。
 
 ## 环境
 

@@ -112,7 +112,7 @@ export function AiPanel({ dir, name }: { dir: string; name: string }) {
                 <p>{pending.action.effectHint}</p>
                 <pre className="cmdline">{pending.action.argv.join(" ")}</pre>
                 <div className="btn-row">
-                  <button className="btn primary" onClick={() => void decide(true)}>批准执行</button>
+                  <button className="btn primary" onClick={() => void decide(true)}>{pending.action.force ? "仍要执行" : "批准执行"}</button>
                   <button className="btn" onClick={() => void decide(false)}>拒绝</button>
                 </div>
               </div>

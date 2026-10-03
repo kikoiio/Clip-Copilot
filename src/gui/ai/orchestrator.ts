@@ -283,7 +283,7 @@ export class AiOrchestrator {
     }
     if (def.kind === "read") {
       try {
-        const text = await def.execute!(args, { dir: session.dir });
+        const text = await def.execute!(args, { dir: session.dir, readDetail: this.#options.readDetail });
         return { ok: true, summary: `${def.spec.name} 完成`, resultText: capText(text) };
       } catch (error) {
         return { ok: false, summary: `${def.spec.name} 失败`, resultText: `错误：${msgOf(error)}` };
@@ -313,7 +313,28 @@ export class AiOrchestrator {
         resultText: "用户在界面上拒绝了该操作，未执行。请询问创作者的意图或提出其他方案。",
       };
     }
-    const result = await runAction(action);
+    let result = await runAction(action);
+    if (result.blockedBy === "software-in-use") {
+      const forceAction: WriteActionSpec = {
+        ...action,
+        force: true,
+        effectHint: `软件占用中：${result.instances?.map((i) => i.projectBasename).join("、") || "Kdenlive 工程"}。仍要执行可能影响未保存工作，请再次明确确认。`,
+      };
+      const forceId = `conf-${Date.now()}-${Math.random().toString(36).slice(1, 7)}`;
+      const forceApproved = await new Promise<boolean>((resolve) => {
+        session.pending = { id: forceId, action: forceAction, resolve };
+        this.#emit({ type: "confirmation", dir: session.dir, confirmationId: forceId, action: forceAction });
+      });
+      session.pending = undefined;
+      if (!forceApproved) {
+        return {
+          ok: false,
+          summary: "用户取消占用操作",
+          resultText: "检测到创作软件占用；用户未在二次确认中选择仍要执行，因此没有运行该操作。",
+        };
+      }
+      result = await runAction(forceAction);
+    }
     const summary = result.ok ? `${action.label} 已执行` : `${action.label} 执行失败`;
     const resultText = result.ok
       ? capText(`命令已执行成功（退出码 0）。\n输出：\n${result.lines.join("\n") || "（无输出）"}`)

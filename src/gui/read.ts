@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { waiversOf, type CheckResult, type Phase, type WorkspaceState } from "../domain.ts";
 import { loadMonitorState } from "../monitor/store.ts";
 import type { MonitorMetrics, SuggestionRecord } from "../monitor/types.ts";
+import type { WorkspaceSoftwareState } from "../sense/types.ts";
 import { applyWaivers } from "../verification/deep.ts";
 import { latestReportsSync, summarize, type DeepCheckReport } from "../verification/report.ts";
 import { WorkspaceError, loadState, stateExists } from "../workspace/store.ts";
@@ -92,6 +93,8 @@ export interface WorkspaceDetail extends WorkspaceSummary {
   reports: ReportView[];
   /** handoff.md 原文；缺失时为 null。 */
   handoff: string | null;
+  /** 软件感知状态（阶段 5 F1/F3/F4）；感知未启用时为 null 并由界面标注。 */
+  software: WorkspaceSoftwareState | null;
 }
 
 /** 仓库根目录（包含 package.json 的最近祖先），与 coordinator 的定位规则一致。 */
@@ -232,7 +235,10 @@ function toReportView(report: DeepCheckReport): ReportView {
 }
 
 /** 组装单个工作区的完整看板数据；目录未初始化时抛 WorkspaceError。 */
-export async function getWorkspaceDetail(dir: string): Promise<WorkspaceDetail> {
+export async function getWorkspaceDetail(
+  dir: string,
+  software: WorkspaceSoftwareState | null = null,
+): Promise<WorkspaceDetail> {
   if (!(await stateExists(dir))) {
     throw new WorkspaceError(`工作区 ${dir} 还没有初始化（先运行 init）`);
   }
@@ -255,6 +261,7 @@ export async function getWorkspaceDetail(dir: string): Promise<WorkspaceDetail> 
     metrics: monitor?.metrics ?? null,
     reports,
     handoff,
+    software,
   };
 }
 

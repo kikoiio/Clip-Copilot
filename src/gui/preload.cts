@@ -18,6 +18,7 @@ const api = {
   invoke: (channel: string, payload?: unknown): Promise<{ ok: boolean; value?: unknown; error?: string }> =>
     ipcRenderer.invoke(channel, payload),
   onMonitorUpdate: (listener: Listener): (() => void) => subscribe("gui:monitorUpdate", listener),
+  onSenseUpdate: (listener: Listener): (() => void) => subscribe("gui:senseUpdate", listener),
   onAiEvent: (listener: Listener): (() => void) => subscribe("gui:aiEvent", listener),
 };
 

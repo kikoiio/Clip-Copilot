@@ -7,6 +7,7 @@
 import path from "node:path";
 import { watchWorkspaces } from "../monitor/engine.ts";
 import { acquireMonitorRunLock, loadMonitorState, type MonitorRunLock } from "../monitor/store.ts";
+import { sendDesktopNotification, type NotificationSender } from "../monitor/notify.ts";
 import type { MonitorMetrics, MonitorState, SuggestionRecord } from "../monitor/types.ts";
 
 export interface MonitorHostEntry {
@@ -27,6 +28,16 @@ export type MonitorListener = (update: MonitorUpdate) => void;
 
 export type WorkspaceWatcher = (dirs: string[], signal: AbortSignal) => Promise<void>;
 
+/** 聚焦时把桌面通知留在建议清单；其他监测更新不受影响。 */
+export function notificationSenderWithSuppression(
+  suppress: () => boolean,
+  sender: NotificationSender = sendDesktopNotification,
+): NotificationSender {
+  return async (title, body) => {
+    if (!suppress()) await sender(title, body);
+  };
+}
+
 export interface MonitorHostOptions {
   /** 轮询监测记录的间隔，默认 5s（与引擎 10s reconcile 定时器匹配）。 */
   pollIntervalMs?: number;
@@ -34,6 +45,8 @@ export interface MonitorHostOptions {
   loadMonitor?: (dir: string) => Promise<MonitorState>;
   /** 监测进程启动器，测试可注入替身；默认为现有引擎 watchWorkspaces。 */
   watch?: WorkspaceWatcher;
+  /** 通知时机门（阶段 5 F5/AC5）：返回 true 时桌面通知降级为仅入清单。 */
+  suppressDesktopNotification?: () => boolean;
 }
 
 interface Session {
@@ -62,10 +75,15 @@ export class MonitorHost {
   constructor(options: MonitorHostOptions = {}) {
     this.#pollIntervalMs = options.pollIntervalMs ?? 5_000;
     this.#loadMonitor = options.loadMonitor ?? loadMonitorState;
+    const suppress = options.suppressDesktopNotification;
     this.#watch = options.watch ?? ((dirs, signal) => watchWorkspaces(dirs, signal, {
       onWorkspaceError: (dir, error) => {
         this.#reportWorkspaceError(path.resolve(dir), error);
       },
+      // 通知时机门：创作软件聚焦中 → 不弹桌面通知（建议与指标照常，降级入清单）。
+      ...(suppress
+        ? { notificationSender: notificationSenderWithSuppression(suppress) }
+        : {}),
     }));
   }
 

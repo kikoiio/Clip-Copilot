@@ -5,11 +5,30 @@ import { PhaseTimeline } from "./PhaseTimeline.tsx";
 export function Dashboard({ detail }: { detail: WorkspaceDetail; onChanged: () => void }) {
   const state = detail.state;
   const deep = state.deepCheck;
+  const software = detail.software;
   return (
     <div className="stack">
       <section className="card">
         <h2>阶段机</h2>
         <PhaseTimeline phase={state.phase} />
+      </section>
+      <section className="card" aria-live="polite">
+        <h2>软件活动</h2>
+        {software ? (
+          <>
+            {!software.running && software.degraded.includes("project-mapping-ambiguous")
+              ? <p>Kdenlive：存在工程映射歧义，无法判断此工作区是否被占用</p>
+              : !software.running ? <p>Kdenlive：未运行</p> : software.instances.map((instance) => (
+              <p key={`${instance.pid}-${instance.projectBasename}`}>
+                Kdenlive：运行中 · {instance.projectBasename}{instance.projectPath ? `（${instance.projectPath}）` : "（路径未知）"}（{instance.focused === null ? "聚焦未知" : instance.focused ? "聚焦" : "后台"}）
+                {software.unsavedSignal === true && <> · 有未保存改动（{software.unsavedSource === "autosave" ? "自动保存文件" : "窗口标题"}）</>}
+              </p>
+            ))}
+            {software.running && software.unsavedSignal === false && <p>未检测到未保存改动</p>}
+            {software.running && software.unsavedSignal === null && <p>未保存状态未知</p>}
+            {software.degraded.length > 0 && <p className="muted">感知降级：{software.degraded.join("、")}</p>}
+          </>
+        ) : <p className="muted">感知未启用</p>}
       </section>
       <section className="card">
         <h2>目标与规格</h2>

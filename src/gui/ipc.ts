@@ -11,12 +11,18 @@ import { defaultWorkspacesRoot, getWorkspaceDetail, listWorkspaces } from "./rea
 import type { WriteActionSpec } from "./bridge.ts";
 import { runAction } from "./bridge.ts";
 import { PROVIDER_PRESETS, SettingsStore, type SaveProviderInput } from "./secrets.ts";
+import type { WorkspaceSoftwareState } from "../sense/types.ts";
 
 export interface GuiServices {
   settings: SettingsStore;
   host: MonitorHost;
   ai: AiOrchestrator;
   send: (channel: string, payload: unknown) => void;
+  /** 软件感知（阶段 5）：未装配时界面按「感知未启用」降级展示。 */
+  sense?: {
+    getState(dir: string): WorkspaceSoftwareState | null;
+    onChange?(listener: (dir: string) => void): () => void;
+  };
 }
 
 const WRITE_ACTION_KINDS = new Set<WriteActionSpec["kind"]>([
@@ -29,6 +35,7 @@ const WRITE_ACTION_KINDS = new Set<WriteActionSpec["kind"]>([
   "reopen",
   "monitor_config",
   "monitor_decide",
+  "software_open",
 ]);
 
 function assertValidActionSpec(spec: unknown): WriteActionSpec {
@@ -38,7 +45,8 @@ function assertValidActionSpec(spec: unknown): WriteActionSpec {
     typeof candidate.kind !== "string" || !WRITE_ACTION_KINDS.has(candidate.kind) ||
     typeof candidate.label !== "string" ||
     !Array.isArray(candidate.argv) || !candidate.argv.every((item) => typeof item === "string") ||
-    typeof candidate.effectHint !== "string"
+    typeof candidate.effectHint !== "string" ||
+    (candidate.force !== undefined && typeof candidate.force !== "boolean")
   ) {
     throw new Error("动作描述不合法（kind/label/argv/effectHint）");
   }
@@ -79,7 +87,8 @@ export function registerGuiIpc(services: GuiServices): void {
   };
 
   handle("gui:listWorkspaces", () => listWorkspaces());
-  handle("gui:getWorkspace", (payload: { dir: string }) => getWorkspaceDetail(payload.dir));
+  handle("gui:getWorkspace", (payload: { dir: string }) =>
+    getWorkspaceDetail(payload.dir, services.sense?.getState(payload.dir) ?? null));
   handle("gui:mediaUrl", (payload: { dir: string; relPath: string }) => mediaUrl(payload.dir, payload.relPath));
   handle("gui:revealInFolder", (payload: { absolutePath: string }) => {
     shell.showItemInFolder(payload.absolutePath);
@@ -125,4 +134,5 @@ export function registerGuiIpc(services: GuiServices): void {
 
   host.onUpdate((update) => send("gui:monitorUpdate", update));
   ai.onUpdate((event) => send("gui:aiEvent", event));
+  services.sense?.onChange?.((dir) => send("gui:senseUpdate", { dir }));
 }

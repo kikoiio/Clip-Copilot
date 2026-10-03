@@ -134,9 +134,13 @@ test("T5：损坏的 config.json 按空设置处理", async () => {
 /* ---------- T7：工具定义 ---------- */
 
 import { READ_TOOLS, toolByName } from "../src/gui/ai/tools.ts";
+import { buildSystemPrompt } from "../src/gui/ai/prompt.ts";
+import { getWorkspaceDetail } from "../src/gui/read.ts";
+import type { WorkspaceSoftwareState } from "../src/sense/types.ts";
 import { taskConfigToGoal, type TaskConfig } from "../src/workflow/taskConfig.ts";
 import { emptyState, saveState } from "../src/workspace/store.ts";
 import { existsSync } from "node:fs";
+import { setSoftwareGate } from "../src/gui/bridge.ts";
 import { AiOrchestrator, type AiEvent, type AiStoredMessage } from "../src/gui/ai/orchestrator.ts";
 import type { ChatClient, ChatEvent, ChatStreamInput, ToolCallRequest } from "../src/gui/ai/providers.ts";
 import type { ProviderSetting } from "../src/gui/secrets.ts";
@@ -167,6 +171,32 @@ test("T7：读工具返回读层真实数据", async () => {
     assert.equal(parsed.counts.assets, 0);
     const artifacts = await toolByName("list_artifacts")!.execute!({}, { dir });
     assert.deepEqual(JSON.parse(artifacts), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("T10：系统提示反映软件状态并如实列出降级与未知项", async () => {
+  const dir = await makeFixtureWorkspace();
+  try {
+    const withoutSense = buildSystemPrompt(await getWorkspaceDetail(dir));
+    assert.match(withoutSense, /软件感知：未启用/u);
+    assert.match(withoutSense, /不知道 Kdenlive/u);
+
+    const state: WorkspaceSoftwareState = {
+      workspaceDir: dir,
+      running: true,
+      instances: [{ pid: 31, projectBasename: "final", projectPath: null, dirty: true, focused: null }],
+      unsavedSignal: true,
+      unsavedSource: "title",
+      degraded: ["autosave-unobservable", "focus-unknown"],
+      observedAt: new Date().toISOString(),
+    };
+    const prompt = buildSystemPrompt(await getWorkspaceDetail(dir, state));
+    assert.match(prompt, /工程 final（路径未知），聚焦状态未知/u);
+    assert.match(prompt, /未保存改动：有（来源：窗口标题脏标记）/u);
+    assert.match(prompt, /自动保存文件不可观察/u);
+    assert.match(prompt, /窗口聚焦状态未知/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -335,6 +365,34 @@ test("T8：拒绝路径——零副作用且回填拒绝原因", async () => {
     assert.equal(toolResult.ok, false);
     assert.match(toolResult.summary, /拒绝/);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(setup.userDataDir, { recursive: true, force: true });
+  }
+});
+
+test("T8：软件占用后 AI 必须二次确认仍要执行", async () => {
+  const dir = await makeFixtureWorkspace();
+  const setup = await makeAiSetup({ withProvider: true });
+  setSoftwareGate({ occupied: () => ({ instances: [{ pid: 7, projectBasename: "final", projectPath: null }] }) });
+  try {
+    const { client } = scriptedClient([
+      { events: [toolCallsEvent([{ id: "c1", name: "monitor_config", arguments: '{"notification":"all"}' }]), { type: "done", stopReason: "tool_use" }] },
+      { events: [{ type: "text", text: "操作已完成。" }, { type: "done", stopReason: "end_turn" }] },
+    ]);
+    const orchestrator = new AiOrchestrator({ settings: setup.settings, sessionsDir: setup.sessionsDir, createClient: () => client });
+    const { events, confirmations } = collectEvents(orchestrator, dir);
+    const sendPromise = orchestrator.send(dir, "改通知");
+    while (confirmations.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    confirmations[0]!.resolve(true);
+    while (confirmations.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = events.filter((event): event is Extract<AiEvent, { type: "confirmation" }> => event.type === "confirmation")[1]!;
+    assert.equal(second.action.force, true);
+    assert.match(second.action.effectHint, /软件占用中/u);
+    confirmations[1]!.resolve(true);
+    await sendPromise;
+    assert.equal((await readFile(path.join(dir, ".monitor", "state.json"), "utf8")).includes('"notificationLevel": "all"'), true);
+  } finally {
+    setSoftwareGate(null);
     await rm(dir, { recursive: true, force: true });
     await rm(setup.userDataDir, { recursive: true, force: true });
   }

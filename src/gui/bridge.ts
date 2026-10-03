@@ -2,16 +2,6 @@ import { format } from "node:util";
 import { cmdMonitor } from "../monitor/commands.ts";
 import { commands } from "../workflow/coordinator.ts";
 
-/** 所有写操作（界面按钮与 AI 发起）的统一返回，对应 CLI 的退出码与输出。 */
-export interface ActionResult {
-  ok: boolean;
-  exitCode: number;
-  /** 捕获的命令输出行（人可读，与终端一致）。 */
-  lines: string[];
-  /** 失败时的错误消息原文（与 CLI 拒绝文案一致）。 */
-  error?: string;
-}
-
 export type WriteActionKind =
   | "render"
   | "verify"
@@ -21,7 +11,8 @@ export type WriteActionKind =
   | "observe"
   | "reopen"
   | "monitor_config"
-  | "monitor_decide";
+  | "monitor_decide"
+  | "software_open";
 
 export interface WriteActionSpec {
   kind: WriteActionKind;
@@ -31,6 +22,40 @@ export interface WriteActionSpec {
   argv: string[];
   /** 将会发生什么（确认卡展示）。 */
   effectHint: string;
+  /** 软件占用被拒后的二次确认：true=创作者已明确「仍要执行」。 */
+  force?: boolean;
+}
+
+/** 软件占用信息（阶段 5 F5；gate 命中时阻断命令桥写操作）。 */
+export interface SoftwareOccupyInfo {
+  instances: { pid: number; projectBasename: string; projectPath: string | null }[];
+}
+
+export interface ActionResult {
+  ok: boolean;
+  exitCode: number;
+  lines: string[];
+  error?: string;
+  blockedBy?: "software-in-use";
+  instances?: SoftwareOccupyInfo["instances"];
+}
+
+/** 软件占用门：返回占用信息表示阻断，null 表示放行。由感知引擎在装配时注入。 */
+export interface SoftwareGate {
+  occupied(dir: string, kind: WriteActionKind): SoftwareOccupyInfo | null;
+}
+
+let softwareGate: SoftwareGate | null = null;
+let softwareOpenHandler: ((dir: string) => Promise<{ ok: boolean; message: string }>) | null = null;
+
+/** 装配点（main.ts bootstrap 调用；测试注入替身）。 */
+export function setSoftwareGate(gate: SoftwareGate | null): void {
+  softwareGate = gate;
+}
+
+/** 装配点：授权「打开工程」执行器（opener）。 */
+export function setSoftwareOpenHandler(handler: ((dir: string) => Promise<{ ok: boolean; message: string }>) | null): void {
+  softwareOpenHandler = handler;
 }
 
 const MONITOR_KINDS: ReadonlySet<WriteActionKind> = new Set(["monitor_config", "monitor_decide"]);
@@ -200,6 +225,38 @@ export function enqueueAction<T>(dir: string, fn: () => Promise<T>): Promise<T> 
 const pendingAction = new Map<string, Promise<unknown>>();
 
 async function execute(spec: WriteActionSpec): Promise<ActionResult> {
+  const dir = workspaceOf(spec.argv);
+  // 冲突避让（阶段 5 F5/N1）：软件占用期间阻断写操作，宁停不覆盖。
+  // force=true 表示创作者已在界面上二次确认「仍要执行」。
+  if (!spec.force && softwareGate) {
+    const occupy = softwareGate.occupied(dir, spec.kind);
+    if (occupy) {
+      const describe = occupy.instances
+        .map((i) => `工程 ${i.projectBasename}${i.projectPath ? `（${i.projectPath}）` : "（路径未知）"}`)
+        .join("；");
+      return {
+        ok: false,
+        exitCode: 3,
+        lines: [],
+        blockedBy: "software-in-use",
+        instances: occupy.instances,
+        error:
+          `${occupy.instances.length > 0 ? `软件占用：Kdenlive 正在运行该工作区${describe}。` : "软件占用：有 Kdenlive 工程无法唯一映射，可能占用该工作区。"}` +
+          "为避免覆盖未保存的工作，本次操作已停止；请先在软件中保存并关闭工程，或在界面上选择「仍要执行」。",
+      };
+    }
+  }
+  if (spec.kind === "software_open") {
+    if (!softwareOpenHandler) {
+      return { ok: false, exitCode: 2, lines: [], error: "打开工程执行器未装配（感知未启用）" };
+    }
+    try {
+      const outcome = await softwareOpenHandler(dir);
+      return { ok: outcome.ok, exitCode: outcome.ok ? 0 : 1, lines: [outcome.message] };
+    } catch (error) {
+      return { ok: false, exitCode: 1, lines: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const handler = MONITOR_KINDS.has(spec.kind)
     ? cmdMonitor
     : commands[spec.kind];

@@ -20,6 +20,7 @@ interface IpcResponse<T> {
 interface GuiBridge {
   invoke: (channel: string, payload?: unknown) => Promise<IpcResponse<unknown>>;
   onMonitorUpdate: (listener: (payload: unknown) => void) => () => void;
+  onSenseUpdate: (listener: (payload: unknown) => void) => () => void;
   onAiEvent: (listener: (payload: unknown) => void) => () => void;
 }
 
@@ -60,6 +61,8 @@ export const gui = {
 
   onMonitorUpdate: (listener: (payload: import("./types.ts").MonitorUpdate) => void) =>
     window.gui.onMonitorUpdate(listener as (payload: unknown) => void),
+  onSenseUpdate: (listener: (payload: { dir: string }) => void) =>
+    window.gui.onSenseUpdate(listener as (payload: unknown) => void),
   onAiEvent: (listener: (payload: AiEvent) => void) =>
     window.gui.onAiEvent(listener as (payload: unknown) => void),
 };

@@ -18,7 +18,7 @@ import {
 import { getWorkspaceDetail } from "../read.ts";
 import type { ToolSpec } from "./providers.ts";
 
-export type AiToolContext = { dir: string };
+export type AiToolContext = { dir: string; readDetail?: (dir: string) => Promise<import("../read.ts").WorkspaceDetail> };
 
 export interface AiToolDefinition {
   spec: ToolSpec;
@@ -48,7 +48,7 @@ const EMPTY_OBJECT_SCHEMA: Record<string, unknown> = { type: "object", propertie
 
 async function readStatus(args: Record<string, unknown>, ctx: AiToolContext): Promise<string> {
   void args;
-  const detail = await getWorkspaceDetail(ctx.dir);
+  const detail = await (ctx.readDetail ?? getWorkspaceDetail)(ctx.dir);
   return JSON.stringify({
     phase: detail.state.phase,
     revision: detail.state.revision,
@@ -57,13 +57,14 @@ async function readStatus(args: Record<string, unknown>, ctx: AiToolContext): Pr
     counts: detail.state.counts,
     deepCheck: detail.state.deepCheck,
     nextAction: detail.state.nextAction,
+    software: detail.software,
     openSuggestions: detail.suggestions.filter((item) => item.status === "open" || item.status === "acknowledged").length,
   }, null, 2);
 }
 
 async function readArtifacts(args: Record<string, unknown>, ctx: AiToolContext): Promise<string> {
   void args;
-  const detail = await getWorkspaceDetail(ctx.dir);
+  const detail = await (ctx.readDetail ?? getWorkspaceDetail)(ctx.dir);
   return JSON.stringify(detail.artifacts.map((artifact) => ({
     id: artifact.id,
     kind: artifact.kind,
@@ -77,19 +78,19 @@ async function readArtifacts(args: Record<string, unknown>, ctx: AiToolContext):
 
 async function readSuggestions(args: Record<string, unknown>, ctx: AiToolContext): Promise<string> {
   void args;
-  const detail = await getWorkspaceDetail(ctx.dir);
+  const detail = await (ctx.readDetail ?? getWorkspaceDetail)(ctx.dir);
   return JSON.stringify({ suggestions: detail.suggestions, metrics: detail.metrics }, null, 2);
 }
 
 async function readReports(args: Record<string, unknown>, ctx: AiToolContext): Promise<string> {
   void args;
-  const detail = await getWorkspaceDetail(ctx.dir);
+  const detail = await (ctx.readDetail ?? getWorkspaceDetail)(ctx.dir);
   return JSON.stringify(detail.reports, null, 2);
 }
 
 async function readHandoff(args: Record<string, unknown>, ctx: AiToolContext): Promise<string> {
   void args;
-  const detail = await getWorkspaceDetail(ctx.dir);
+  const detail = await (ctx.readDetail ?? getWorkspaceDetail)(ctx.dir);
   return detail.handoff ?? "（handoff.md 缺失）";
 }
 
@@ -160,6 +161,20 @@ function enumStr<T extends string>(args: Record<string, unknown>, key: string, a
 }
 
 export const WRITE_TOOLS: readonly AiToolDefinition[] = [
+  {
+    spec: {
+      name: "open_workspace_project",
+      description: "经创作者确认后，在 Kdenlive 中打开当前工作区最新工程，不修改工程内容",
+      parameters: EMPTY_OBJECT_SCHEMA,
+    },
+    kind: "write",
+    buildAction: (_args, ctx) => ({
+      kind: "software_open",
+      label: "打开工作区工程",
+      argv: ["--workspace", ctx.dir],
+      effectHint: "在 Kdenlive 中打开该工作区最新工程；不会修改工程内容，操作会写入 evidence 留痕。",
+    }),
+  },
   {
     ...renderTool("score", "重新渲染配乐（LMMS 工程 + WAV），写操作，需创作者确认"),
   },

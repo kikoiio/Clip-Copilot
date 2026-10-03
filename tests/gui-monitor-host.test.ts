@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { MonitorHost, type MonitorUpdate } from "../src/gui/monitor-host.ts";
+import { MonitorHost, notificationSenderWithSuppression, type MonitorUpdate } from "../src/gui/monitor-host.ts";
 import { acquireMonitorRunLock } from "../src/monitor/store.ts";
 import type { MonitorState, SuggestionRecord } from "../src/monitor/types.ts";
 
@@ -183,4 +183,15 @@ test("T4：监测进程启动失败时经事件上报可读原因", async () => 
     await host.dispose();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("T9：创作软件聚焦时桌面通知被抑制，清单通知仍能恢复", async () => {
+  let focused = true;
+  const sent: string[] = [];
+  const notify = notificationSenderWithSuppression(() => focused, async (title, body) => { sent.push(`${title}:${body}`); });
+  await notify("建议", "聚焦中");
+  assert.deepEqual(sent, []);
+  focused = false;
+  await notify("建议", "已离开");
+  assert.deepEqual(sent, ["建议:已离开"]);
 });

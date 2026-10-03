@@ -5,7 +5,7 @@
 工作周期的任务中保持方向，并让人随时能够查看、纠正和接手。当前以 Kdenlive 与
 LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](docs/VISION.md)。
 
-## 当前阶段：阶段 4「工作区感知与主动建议」（2026-10-03 验收）
+## 当前阶段：阶段 5「与正在运行的软件实时协作」（2026-10-03 开发完成）
 
 阶段 1 的样板「山间清晨」与阶段 2 的流程泛化（任务配置建区、`city-nightfall` 与
 `day-to-stars` 两部新短片）已于 2026-10-02 验收；阶段 3 让验证可信（深度检查、
@@ -15,6 +15,12 @@ LMMS 为起点；长期愿景、目标体验与判断标准见 [docs/VISION.md](
 [docs/spec_docs/vision-phases.md](docs/spec_docs/vision-phases.md)；各阶段
 spec/plan/task/checklist 见 [docs/spec_docs/phase-1/](docs/spec_docs/phase-1/)
 至 [phase-4/](docs/spec_docs/phase-4/)。
+
+阶段 5 在 GUI 中增加 Kdenlive 运行/工程/聚焦状态与未保存改动近似，并把同一摘要提供给 AI。
+软件占用时，render/checkpoint/reopen 会先阻断；创作者可在确认卡再次明确选择「仍要执行」。
+桌面通知在 Kdenlive 聚焦时只更新建议清单。动作页可经确认打开工作区最新工程并写 evidence；
+`GUI_SENSE=off` 或 AT-SPI 不可用时，其余工作台功能继续可用并标注降级。
+阶段 5 checklist 中的 Kdenlive 真桌面演练与创作者参与验收仍需在实际创作会话中完成。
 
 平行于阶段路线，**图形工作台（GUI 平行专项）**已于 2026-10-03 完成开发与验收
 （自动化项 29/31 通过，听感与真实模型复核两项待创作者；见下文「图形工作台」与
@@ -146,10 +152,17 @@ npm run gui      # 首次会先构建（主进程 tsc + 渲染进程 vite），�
   OpenAI 兼容端点；API Key 经 safeStorage 加密只存本机用户配置目录）。助手依据
   工作区真实状态回答问题，可发起写操作命令，但每条先弹确认卡、经你批准才执行；
   未配置模型时仅 AI 面板不可用，其余功能照常。
+- **实时软件协作（阶段 5）**：看板与 AI 上下文显示 Kdenlive 工程、聚焦及标题脏标记；
+  工程占用时写操作先提示，强制继续需要二次确认；动作页「打开工程」先展示确认卡并留操作记录。
+  聚焦 Kdenlive 时桌面通知静默、建议仍进入清单。感知通过本机 AT-SPI 助手工作，
+  `GUI_SENSE=off` 可关闭；AT-SPI 不可用会如实降级。
 - `init`/`ingest`/方案编辑仍走 CLI；AI 写操作集合 = 人工动作 + `render`。
   spec/plan/task/checklist 与验收证据见
   [docs/spec_docs/phase-gui/](docs/spec_docs/phase-gui/)（其中 AC 全量演练
   待创作者执行）。
+
+阶段 5 spec/plan/task/checklist 与 LMMS 探索结论见
+[docs/spec_docs/phase-5/](docs/spec_docs/phase-5/)；真桌面演练待创作者参与。
 
 ## 目录
 

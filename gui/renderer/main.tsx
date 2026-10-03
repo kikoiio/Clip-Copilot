@@ -63,7 +63,10 @@ function App() {
     const unsubscribe = gui.onMonitorUpdate((update: MonitorUpdate) => {
       if (update.dir === selectedDir) void refreshDetail(update.dir);
     });
-    return unsubscribe;
+    const unsubscribeSense = gui.onSenseUpdate((update) => {
+      if (update.dir === selectedDir) void refreshDetail(update.dir);
+    });
+    return () => { unsubscribe(); unsubscribeSense(); };
   }, [refreshWorkspaces, refreshDetail, selectedDir]);
 
   useEffect(() => {

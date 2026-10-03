@@ -16,15 +16,17 @@ export function Actions({ detail, onChanged }: { detail: WorkspaceDetail; onChan
   const execute = async (spec: WriteActionSpec) => {
     setRunning(true);
     setResult(null);
+    let keepPending = false;
     try {
       const outcome = await gui.runAction(spec);
       setResult(outcome);
       if (outcome.ok) onChanged();
+      keepPending = outcome.blockedBy === "software-in-use";
     } catch (error) {
       setResult({ ok: false, exitCode: 1, lines: [], error: error instanceof Error ? error.message : String(error) });
     } finally {
       setRunning(false);
-      setPending(null);
+      if (!keepPending) setPending(null);
     }
   };
 
@@ -39,9 +41,15 @@ export function Actions({ detail, onChanged }: { detail: WorkspaceDetail; onChan
         <section className="card confirm-card">
           <h2>确认操作：{pending.label}</h2>
           <p>{pending.effectHint}</p>
+            {result?.blockedBy === "software-in-use" && (
+              <p className="error-text">软件占用中：{result.instances?.map((i) => i.projectBasename).join("、")}。继续可能影响未保存工作。</p>
+          )}
           <CommandLine spec={pending} />
           <div className="btn-row">
             <button className="btn primary" disabled={running} onClick={() => void execute(pending)}>确认执行</button>
+            {result?.blockedBy === "software-in-use" && (
+              <button className="btn" disabled={running} onClick={() => void execute({ ...pending, force: true })}>仍要执行</button>
+            )}
             <button className="btn" disabled={running} onClick={() => setPending(null)}>取消</button>
           </div>
         </section>
@@ -61,6 +69,14 @@ export function Actions({ detail, onChanged }: { detail: WorkspaceDetail; onChan
       <WaiveCard busy={running} propose={propose} dir={dir} />
       <ObserveCard busy={running} propose={propose} dir={dir} />
       <ReopenCard busy={running} propose={propose} dir={dir} />
+      <section className="card">
+        <h2>在 Kdenlive 中打开工程</h2>
+        <p className="muted">打开该工作区最近更新的 .kdenlive 工程；已有实例时只报告现状。</p>
+        <button className="btn" disabled={running} onClick={() => propose({
+          kind: "software_open", label: "打开工作区工程", argv: ["--workspace", dir],
+          effectHint: "在 Kdenlive 中打开该工作区最新工程；不会修改工程内容，操作会写入 evidence 留痕。",
+        })}>打开工程</button>
+      </section>
       <MonitorConfigCard busy={running} propose={propose} dir={dir} />
       <MonitorCard busy={running} propose={propose} dir={dir} suggestions={detail.suggestions} />
       <CheckResultPanel detail={detail} />
@@ -82,6 +98,7 @@ const CLI_SUBCOMMAND: Partial<Record<WriteActionSpec["kind"], string>> = {
 };
 
 function CommandLine({ spec }: { spec: WriteActionSpec }) {
+  if (spec.kind === "software_open") return <pre className="cmdline">授权软件操作：Kdenlive 打开工作区最新工程</pre>;
   const prefix = spec.kind === "monitor_config" || spec.kind === "monitor_decide"
     ? "monitor "
     : CLI_SUBCOMMAND[spec.kind]

@@ -115,6 +115,17 @@ export interface WorkspaceDetail extends WorkspaceSummary {
   metrics: MonitorMetricsView | null;
   reports: ReportView[];
   handoff: string | null;
+  software: WorkspaceSoftwareState | null;
+}
+
+export interface WorkspaceSoftwareState {
+  workspaceDir: string;
+  running: boolean;
+  instances: { pid: number; projectBasename: string; projectPath: string | null; dirty: boolean | null; focused: boolean | null }[];
+  unsavedSignal: boolean | null;
+  unsavedSource: "title" | "autosave" | null;
+  degraded: string[];
+  observedAt: string;
 }
 
 export interface MonitorHostEntry {
@@ -139,13 +150,15 @@ export type WriteActionKind =
   | "observe"
   | "reopen"
   | "monitor_config"
-  | "monitor_decide";
+  | "monitor_decide"
+  | "software_open";
 
 export interface WriteActionSpec {
   kind: WriteActionKind;
   label: string;
   argv: string[];
   effectHint: string;
+  force?: boolean;
 }
 
 export interface ActionResult {
@@ -153,6 +166,8 @@ export interface ActionResult {
   exitCode: number;
   lines: string[];
   error?: string;
+  blockedBy?: "software-in-use";
+  instances?: { pid: number; projectBasename: string; projectPath: string | null }[];
 }
 
 export type AiRole = "user" | "assistant" | "tool";

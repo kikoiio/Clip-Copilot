@@ -39,7 +39,7 @@ export function Actions({ detail, onChanged }: { detail: WorkspaceDetail; onChan
         <section className="card confirm-card">
           <h2>确认操作：{pending.label}</h2>
           <p>{pending.effectHint}</p>
-          <pre className="cmdline">npm run cli -- {pending.kind === "monitor_config" || pending.kind === "monitor_decide" ? "monitor " : ""}{pending.argv.join(" ")}</pre>
+          <CommandLine spec={pending} />
           <div className="btn-row">
             <button className="btn primary" disabled={running} onClick={() => void execute(pending)}>确认执行</button>
             <button className="btn" disabled={running} onClick={() => setPending(null)}>取消</button>
@@ -61,6 +61,7 @@ export function Actions({ detail, onChanged }: { detail: WorkspaceDetail; onChan
       <WaiveCard busy={running} propose={propose} dir={dir} />
       <ObserveCard busy={running} propose={propose} dir={dir} />
       <ReopenCard busy={running} propose={propose} dir={dir} />
+      <MonitorConfigCard busy={running} propose={propose} dir={dir} />
       <MonitorCard busy={running} propose={propose} dir={dir} suggestions={detail.suggestions} />
       <CheckResultPanel detail={detail} />
     </div>
@@ -68,6 +69,26 @@ export function Actions({ detail, onChanged }: { detail: WorkspaceDetail; onChan
 }
 
 type Proposer = (spec: WriteActionSpec) => void;
+
+/** 确认卡里的命令行展示：把动作类型映射回 CLI 子命令（monitor 类已带 monitor 前缀）。 */
+const CLI_SUBCOMMAND: Partial<Record<WriteActionSpec["kind"], string>> = {
+  render: "render",
+  verify: "verify",
+  checkpoint: "checkpoint",
+  review: "review",
+  waive: "waive",
+  observe: "observe",
+  reopen: "reopen",
+};
+
+function CommandLine({ spec }: { spec: WriteActionSpec }) {
+  const prefix = spec.kind === "monitor_config" || spec.kind === "monitor_decide"
+    ? "monitor "
+    : CLI_SUBCOMMAND[spec.kind]
+      ? `${CLI_SUBCOMMAND[spec.kind]} `
+      : "";
+  return <pre className="cmdline">npm run cli -- {prefix}{spec.argv.join(" ")}</pre>;
+}
 
 function VerifyCard({ dir, propose, busy }: { dir: string; propose: Proposer; busy: boolean; reports: unknown }) {
   return (
@@ -226,6 +247,46 @@ function ReopenCard({ dir, propose, busy }: { dir: string; propose: Proposer; bu
         })}
       >
         重开
+      </button>
+    </section>
+  );
+}
+
+function MonitorConfigCard({ dir, propose, busy }: { dir: string; propose: Proposer; busy: boolean }) {
+  const [scope, setScope] = useState("assets,projects,outputs,evidence,state");
+  const [notification, setNotification] = useState<"silent" | "important" | "all">("important");
+  const [autoRepair, setAutoRepair] = useState<"on" | "off">("off");
+  return (
+    <section className="card">
+      <h2>监测配置</h2>
+      <p className="muted">调整该工作区的监测范围、通知强度与 handoff 自动修复授权，与 CLI `monitor config` 同一实现。</p>
+      <label>范围（逗号分隔：assets/projects/outputs/evidence/state）
+        <input value={scope} onChange={(event) => setScope(event.target.value)} placeholder="assets,projects,outputs,evidence,state" />
+      </label>
+      <label>通知强度
+        <select value={notification} onChange={(event) => setNotification(event.target.value as typeof notification)}>
+          <option value="silent">silent——不打扰，只入清单</option>
+          <option value="important">important——仅高优先级通知</option>
+          <option value="all">all——全部通知</option>
+        </select>
+      </label>
+      <label>handoff 自动修复
+        <select value={autoRepair} onChange={(event) => setAutoRepair(event.target.value as typeof autoRepair)}>
+          <option value="off">off——缺失时只建议</option>
+          <option value="on">on——授权监测器自动重建</option>
+        </select>
+      </label>
+      <button
+        className="btn primary"
+        disabled={busy || scope.trim() === ""}
+        onClick={() => propose({
+          kind: "monitor_config",
+          label: "修改监测配置",
+          argv: ["config", "--workspace", dir, "--scope", scope.trim(), "--notification", notification, "--auto-repair-handoff", autoRepair],
+          effectHint: "更新该工作区的监测范围、通知强度与 handoff 自动修复授权",
+        })}
+      >
+        保存配置
       </button>
     </section>
   );

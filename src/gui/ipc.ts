@@ -85,6 +85,14 @@ export function registerGuiIpc(services: GuiServices): void {
     shell.showItemInFolder(payload.absolutePath);
     return true;
   });
+  handle("gui:openPath", async (payload: { absolutePath: string }) => {
+    if (!payload.absolutePath.startsWith(`${defaultWorkspacesRoot()}${path.sep}`)) {
+      throw new Error("只能打开 workspaces/ 目录内的文件");
+    }
+    const error = await shell.openPath(payload.absolutePath);
+    if (error) throw new Error(`系统打开失败：${error}`);
+    return true;
+  });
   handle("gui:runAction", async (payload: { spec: unknown }) => {
     const spec = assertValidActionSpec(payload.spec);
     return await runAction(spec);

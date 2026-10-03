@@ -7,13 +7,33 @@ import type { ArtifactView, WorkspaceDetail } from "../types.ts";
 export function Artifacts({ detail }: { detail: WorkspaceDetail }) {
   const [playing, setPlaying] = useState<ArtifactView | null>(null);
   const [mediaSrc, setMediaSrc] = useState<string | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+
+  // 开发钩子：?autoplay=1 时自动选中第一个可播放产物（自动化验证用）。
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("autoplay") !== "1") return;
+    if (playing) return;
+    const playable = detail.artifacts.find(
+      (item) => item.onDisk && (item.kind === "video_preview" || item.kind === "video_final"),
+    ) ?? detail.artifacts.find(
+      (item) => item.onDisk && (item.kind === "audio_preview" || item.kind === "audio_final"),
+    );
+    if (playable) setPlaying(playable);
+  }, [detail.artifacts, playing]);
 
   useEffect(() => {
     let cancelled = false;
+    setMediaError(null);
     if (playing) {
       void gui.mediaUrl(detail.dir, playing.path).then((url) => {
         if (!cancelled) setMediaSrc(url);
-      }).catch(() => setMediaSrc(null));
+      }).catch((err) => {
+        if (!cancelled) {
+          setMediaSrc(null);
+          setMediaError(err instanceof Error ? err.message : String(err));
+          console.error("[播放失败] 生成媒体链接出错:", err);
+        }
+      });
     } else {
       setMediaSrc(null);
     }
@@ -31,10 +51,36 @@ export function Artifacts({ detail }: { detail: WorkspaceDetail }) {
         <section className="card">
           <h2>预览：{artifactKindLabel(playing.kind)}</h2>
           <p className="muted">{playing.path}</p>
-          {mediaSrc && isVideo(playing) && <video controls autoPlay src={mediaSrc} className="player" />}
-          {mediaSrc && isAudio(playing) && <audio controls autoPlay src={mediaSrc} className="audio-player" />}
-          {!mediaSrc && <p className="muted">正在生成媒体链接…</p>}
-          <button className="btn" onClick={() => setPlaying(null)}>关闭预览</button>
+          {mediaError && <p className="error-text">{mediaError}</p>}
+          {mediaSrc && isVideo(playing) && (
+            <video
+              controls autoPlay src={mediaSrc} className="player"
+              onLoadedMetadata={() => console.info("[播放就绪]", playing.path)}
+              onError={() => {
+                const message = "媒体加载失败（详见主进程日志与开发者工具）";
+                setMediaError(message);
+                console.error("[播放失败]", playing.path, mediaSrc);
+              }}
+            />
+          )}
+          {mediaSrc && isAudio(playing) && (
+            <audio
+              controls autoPlay src={mediaSrc} className="audio-player"
+              onLoadedMetadata={() => console.info("[播放就绪]", playing.path)}
+              onError={() => {
+                const message = "媒体加载失败（详见主进程日志与开发者工具）";
+                setMediaError(message);
+                console.error("[播放失败]", playing.path, mediaSrc);
+              }}
+            />
+          )}
+          {!mediaSrc && !mediaError && <p className="muted">正在生成媒体链接…</p>}
+          <div className="btn-row">
+            <button className="btn" onClick={() => setPlaying(null)}>关闭预览</button>
+            <button className="btn" onClick={() => void gui.openPath(playing.absolutePath).catch((err) => setMediaError(err instanceof Error ? err.message : String(err)))}>
+              用系统播放器打开
+            </button>
+          </div>
         </section>
       )}
       <section className="card">
@@ -58,6 +104,9 @@ export function Artifacts({ detail }: { detail: WorkspaceDetail }) {
                 <td className="row-actions">
                   {(isVideo(artifact) || isAudio(artifact)) && artifact.onDisk && (
                     <button className="btn small" onClick={() => setPlaying(artifact)}>播放</button>
+                  )}
+                  {artifact.onDisk && (
+                    <button className="btn small" onClick={() => void gui.openPath(artifact.absolutePath).catch(() => undefined)}>打开</button>
                   )}
                   <button className="btn small" onClick={() => void gui.revealInFolder(artifact.absolutePath)}>定位</button>
                 </td>

@@ -40,6 +40,7 @@ export const gui = {
   getWorkspace: (dir: string) => call<WorkspaceDetail>("gui:getWorkspace", { dir }),
   mediaUrl: (dir: string, relPath: string) => call<string>("gui:mediaUrl", { dir, relPath }),
   revealInFolder: (absolutePath: string) => call<boolean>("gui:revealInFolder", { absolutePath }),
+  openPath: (absolutePath: string) => call<boolean>("gui:openPath", { absolutePath }),
   runAction: (spec: WriteActionSpec) => call<ActionResult>("gui:runAction", { spec }),
 
   monitorStart: (dir: string) => call<MonitorHostEntry>("gui:monitorStart", { dir }),

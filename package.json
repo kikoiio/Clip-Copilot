@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "dist/src/gui/main.js",
   "description": "山间清晨短片工作流：素材登记、LMMS 配乐、Kdenlive 剪辑与验证",
   "engines": {
     "node": ">=24"
@@ -10,14 +11,24 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
+    "check:renderer": "tsc -p gui/renderer",
     "test": "npm run -s build && node --test --test-concurrency=1 tests/*.test.ts",
-    "cli": "node dist/src/cli.js"
+    "cli": "node dist/src/cli.js",
+    "gui:renderer": "vite build gui/renderer",
+    "gui": "npm run -s build && npm run -s gui:renderer && electron ."
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.8"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^5.7.0"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.5.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.7.0",
+    "vite": "^8.3.2"
   }
 }

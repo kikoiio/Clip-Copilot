@@ -163,13 +163,18 @@ export class SettingsStore {
     const settings = await this.getSettings();
     const id = input.id ?? `provider-${Date.now()}-${Math.random().toString(36).slice(1, 7)}`;
     const existing = settings.providers.find((item) => item.id === id);
+    if (input.id !== undefined && !existing) {
+      throw new Error(`提供方 ${id} 不存在，请刷新设置后重试`);
+    }
     const setting: ProviderSetting = {
       id,
       preset: preset.id,
       baseUrl: input.baseUrl ?? existing?.baseUrl ?? preset.defaultBaseUrl,
       model: input.model ?? existing?.model ?? preset.defaultModel,
     };
-    settings.providers = [...settings.providers.filter((item) => item.id !== id), setting];
+    settings.providers = existing
+      ? settings.providers.map((item) => item.id === id ? setting : item)
+      : [...settings.providers, setting];
     if (settings.activeProviderId === null) settings.activeProviderId = id;
 
     if (input.apiKey !== undefined && input.apiKey !== "") {

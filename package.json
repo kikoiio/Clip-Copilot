@@ -12,10 +12,10 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
     "check:renderer": "tsc -p gui/renderer",
-    "test": "npm run -s build && node --test --test-concurrency=1 tests/*.test.ts",
+    "test": "npm run -s build && node --test --test-concurrency=1 tests/*.test.ts tests/*.test.mjs",
     "cli": "node dist/src/cli.js",
     "gui:renderer": "vite build gui/renderer",
-    "gui": "npm run -s build && npm run -s gui:renderer && electron ."
+    "gui": "npm run -s build && npm run -s gui:renderer && node scripts/gui-launch.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.8"

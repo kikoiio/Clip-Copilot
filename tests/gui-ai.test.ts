@@ -81,6 +81,49 @@ test("T5：更新时不带 apiKey 保留既有密文；setActive 校验存在性
   }
 });
 
+test("编辑配置持久化端点、模型与预设，保持原 ID、顺序、激活项和其他配置", async () => {
+  const dir = await makeUserDataDir();
+  try {
+    const store = new SettingsStore(dir, fakeBox());
+    const first = await store.saveProvider({ preset: "openai", apiKey: "original-key" });
+    const id = first.providers[0]!.id;
+    const before = await store.saveProvider({ preset: "ollama", model: "other-model" });
+    const keysBefore = await readFile(path.join(dir, "keys.json"), "utf8");
+    const updated = await store.saveProvider({
+      id, preset: "custom", baseUrl: "https://example.test/v1", model: "edited-model",
+    });
+    assert.deepEqual(updated.providers.map((provider) => provider.id), before.providers.map((provider) => provider.id));
+    assert.deepEqual(updated.providers[0], {
+      id, preset: "custom", baseUrl: "https://example.test/v1", model: "edited-model",
+    });
+    assert.deepEqual(updated.providers[1], before.providers[1]);
+    assert.equal(updated.activeProviderId, id);
+    assert.equal(await readFile(path.join(dir, "keys.json"), "utf8"), keysBefore);
+    assert.deepEqual(await new SettingsStore(dir, fakeBox()).getSettings(), updated);
+
+    await store.saveProvider({ id, preset: "custom", apiKey: "replacement-key" });
+    assert.equal(await new SettingsStore(dir, fakeBox()).getApiKey(id), "replacement-key");
+    assert.equal((await store.getSettings()).providers.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("编辑已不存在的配置会拒绝，保留配置与密钥文件", async () => {
+  const dir = await makeUserDataDir();
+  try {
+    const store = new SettingsStore(dir, fakeBox());
+    await store.saveProvider({ preset: "openai", apiKey: "original-key" });
+    const beforeConfig = await readFile(path.join(dir, "config.json"), "utf8");
+    const beforeKeys = await readFile(path.join(dir, "keys.json"), "utf8");
+    await assert.rejects(store.saveProvider({ id: "removed", preset: "openai", apiKey: "new-key" }), /不存在/);
+    assert.equal(await readFile(path.join(dir, "config.json"), "utf8"), beforeConfig);
+    assert.equal(await readFile(path.join(dir, "keys.json"), "utf8"), beforeKeys);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("T5：加密不可用时拒绝保存且不留明文、不落文件", async () => {
   const dir = await makeUserDataDir();
   try {

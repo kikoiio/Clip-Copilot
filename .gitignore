@@ -23,3 +23,6 @@ testmedia/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# CI 演练证据（上传为 artifact，不入库）
+/evidence/

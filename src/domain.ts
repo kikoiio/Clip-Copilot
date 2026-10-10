@@ -3,6 +3,8 @@
  * 时间约定：视频用 30 帧/秒整数帧；音乐用节拍与小节（1 小节 = 4 拍）。
  */
 
+import type { ResolveWorkspaceContext } from "./editor/contracts.ts";
+
 export const SCHEMA_VERSION = 2;
 
 /** 配乐与视频允许的最大时长差（毫秒）。 */
@@ -241,6 +243,9 @@ export interface AssetCandidate {
 export interface WorkspaceState {
   schemaVersion: typeof SCHEMA_VERSION;
   revision: number;
+  /** Resolve-first 新工作区显式标记；旧工作区不做隐式迁移。 */
+  workspaceKind?: "resolve";
+  editorContext?: ResolveWorkspaceContext;
   goal: Goal;
   /** 任务配置候选清单；v1 迁移的旧工作区没有此字段，视为不做候选核对。 */
   assetCandidates?: AssetCandidate[];
@@ -257,6 +262,11 @@ export interface WorkspaceState {
   waivers?: WaiverRecord[];
   nextAction: string;
   updatedAt: string;
+}
+
+export interface ResolveWorkspaceState extends WorkspaceState {
+  workspaceKind: "resolve";
+  editorContext: ResolveWorkspaceContext;
 }
 
 /** 计划分片必须正好铺满 0..totalFrames，无空洞、无重叠；总长落在给定目标范围内。 */

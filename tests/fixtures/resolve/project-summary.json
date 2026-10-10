@@ -1,0 +1,90 @@
+{
+  "project": {
+    "id": "fixture-project-001",
+    "name": "Synthetic Resolve Project",
+    "database": {
+      "id": "fixture-database-001",
+      "name": "Synthetic Database"
+    }
+  },
+  "timeline": {
+    "id": "fixture-timeline-001",
+    "name": "Synthetic Main Timeline",
+    "frameRate": {
+      "numerator": 24000,
+      "denominator": 1001
+    },
+    "resolution": {
+      "width": 1920,
+      "height": 1080
+    },
+    "videoTracks": [
+      {
+        "id": "fixture-video-track-1",
+        "index": 1,
+        "name": "Video 1",
+        "clips": [
+          {
+            "id": "fixture-video-clip-1",
+            "mediaId": "fixture-media-video-1",
+            "sourceInFrame": 24,
+            "sourceOutFrame": 143,
+            "timelineStartFrame": 0,
+            "durationFrames": 120
+          }
+        ]
+      }
+    ],
+    "audioTracks": [
+      {
+        "id": "fixture-audio-track-1",
+        "index": 1,
+        "name": "Audio 1",
+        "clips": [
+          {
+            "id": "fixture-audio-clip-1",
+            "mediaId": "fixture-media-audio-1",
+            "sourceInFrame": 0,
+            "sourceOutFrame": 239,
+            "timelineStartFrame": 0,
+            "durationFrames": 240
+          }
+        ]
+      }
+    ],
+    "markers": [
+      {
+        "id": "fixture-marker-1",
+        "frame": 120,
+        "name": "Synthetic marker",
+        "note": "Fixture-only marker note"
+      }
+    ],
+    "subtitles": [
+      {
+        "id": "fixture-subtitle-1",
+        "startFrame": 24,
+        "endFrame": 72,
+        "text": "Synthetic subtitle entry",
+        "trackId": "fixture-subtitle-track-1"
+      }
+    ]
+  },
+  "media": [
+    {
+      "id": "fixture-media-video-1",
+      "location": "fixture://media/video-001",
+      "durationFrames": 240,
+      "availability": "unknown"
+    },
+    {
+      "id": "fixture-media-audio-1",
+      "location": "fixture://media/audio-001",
+      "durationFrames": 480,
+      "availability": "unknown"
+    }
+  ],
+  "futureProtocolField": {
+    "example": "intentionally-unmapped"
+  }
+}

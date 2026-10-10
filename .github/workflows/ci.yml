@@ -4,13 +4,58 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_editor_protocol:
+        description: Run the Resolve protocol checks
+        required: true
+        default: true
+        type: boolean
+      run_regression:
+        description: Run the legacy Kdenlive/LMMS regression
+        required: true
+        default: false
+        type: boolean
+      run_gui_drills:
+        description: Run GUI drills
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  editor-protocol:
+    if: github.event_name == 'push' || inputs.run_editor_protocol
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 类型检查（无 Resolve/GUI）
+        run: |
+          mkdir -p evidence/editor-protocol
+          set -o pipefail
+          npm run check 2>&1 | tee evidence/editor-protocol/check.log
+      - name: 编辑器协议定向测试（无 Resolve/GUI）
+        run: |
+          mkdir -p evidence/editor-protocol
+          set -o pipefail
+          npm run test:editor 2>&1 | tee evidence/editor-protocol/test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: editor-protocol-evidence
+          path: evidence/editor-protocol
+          if-no-files-found: warn
+
   regression:
+    if: github.event_name == 'push' || inputs.run_regression
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -35,6 +80,7 @@ jobs:
         run: npm test
 
   gui-drills:
+    if: github.event_name == 'push' || inputs.run_gui_drills
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
     "check:renderer": "tsc -p gui/renderer",
+    "test:editor": "node --test tests/editor-mapping.test.ts tests/editor-capabilities.test.ts tests/editor-adapter.test.ts tests/editor-state.test.ts tests/editor-workspace.test.ts",
     "test": "npm run -s build && node --test --test-concurrency=1 tests/*.test.ts tests/*.test.mjs",
     "cli": "node dist/src/cli.js",
     "gui:renderer": "vite build gui/renderer",

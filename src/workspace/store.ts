@@ -10,6 +10,7 @@ import {
   type Goal,
   type WorkspaceState,
 } from "../domain.ts";
+import { validateResolveWorkspaceContext } from "../editor/workspace.ts";
 
 export const STATE_FILE = "state.json";
 
@@ -105,6 +106,21 @@ export function assertValidState(value: unknown): WorkspaceState {
   const state = value as WorkspaceState;
   if (state.schemaVersion !== SCHEMA_VERSION) {
     throw new WorkspaceError(`state.json schemaVersion=${String(rawVersion)}，期望 ${SCHEMA_VERSION}（或可迁移的 1）`);
+  }
+  if (state.workspaceKind !== undefined && state.workspaceKind !== "resolve") {
+    throw new WorkspaceError("state.json workspaceKind 非法");
+  }
+  if (state.workspaceKind === "resolve") {
+    if (state.editorContext === undefined) {
+      throw new WorkspaceError("Resolve state 缺少 editorContext");
+    }
+    try {
+      validateResolveWorkspaceContext(state.editorContext);
+    } catch (error) {
+      throw new WorkspaceError(`Resolve editorContext 非法：${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (state.editorContext !== undefined) {
+    throw new WorkspaceError("未标记 Resolve 的旧状态不得包含 editorContext");
   }
   if (typeof state.revision !== "number" || state.revision < 0) {
     throw new WorkspaceError("state.json revision 非法");

@@ -18,7 +18,6 @@ export interface ResolveProjectSummaryResponse {
   media?: ResolveProjectSummaryMedia[];
   [field: string]: unknown;
 }
-
 export interface ResolveProjectSummaryProject {
   id?: unknown;
   name?: unknown;

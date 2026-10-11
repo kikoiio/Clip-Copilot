@@ -79,8 +79,7 @@ test("T21: corrupted monitor record in one workspace does not stop the other", a
       onWorkspaceError: (dir) => errors.push(dir),
     });
     try {
-      await eventually(async () => !!(await loadMonitorState(healthy)).baseline);
-      assert.ok(errors.includes(broken));
+      await eventually(async () => !!(await loadMonitorState(healthy)).baseline && errors.includes(broken));
       assert.equal(await readFile(path.join(broken, ".monitor", "state.json"), "utf8"), "{broken");
     } finally { stop.abort(); await run; }
   } finally {

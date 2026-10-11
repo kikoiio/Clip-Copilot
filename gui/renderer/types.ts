@@ -116,6 +116,22 @@ export interface WorkspaceDetail extends WorkspaceSummary {
   reports: ReportView[];
   handoff: string | null;
   software: WorkspaceSoftwareState | null;
+  resolve: ResolveContextView | null;
+}
+
+export interface ResolveContextView {
+  health: { state: "online" | "offline" | "unknown"; checkedAt: string; reason?: string };
+  runtime: { version: string; build: string; edition: "free" | "studio" | "unknown"; platform: "linux-x64"; compatibility: "supported" | "unsupported" | "unknown"; checkedAt: string } | null;
+  identity: { projectId: string | null; databaseId: string | null; projectName: string; timelineId: string | null; timelineName: string | null } | null;
+  lastReadAt: string | null;
+  snapshot: null | {
+    fingerprint: string;
+    capturedAt: string;
+    counts: { tracks: number; clips: number; markers: number; subtitles: number; media: number };
+    mappingNotes: { sourceField: string; reason: string }[];
+  };
+  staleReason: string | null;
+  capabilities: { id: string; stage: string; support: string; available: boolean; reason: string | null }[];
 }
 
 export interface WorkspaceSoftwareState {

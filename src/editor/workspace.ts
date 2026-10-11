@@ -4,6 +4,7 @@ import {
   type EditorAdapter,
   type EditorHealth,
   type ProjectIdentity,
+  type ResolveRuntimeInfo,
   type ResolveWorkspaceContext,
 } from "./contracts.ts";
 
@@ -17,6 +18,19 @@ function isHealth(value: unknown): value is EditorHealth {
   if (value.version !== undefined && typeof value.version !== "string") return false;
   if (value.edition !== undefined && !["free", "studio", "unknown"].includes(String(value.edition))) return false;
   return value.reason === undefined || typeof value.reason === "string";
+}
+
+function isRuntime(value: unknown): value is ResolveRuntimeInfo {
+  if (!isRecord(value)) return false;
+  if (typeof value.version !== "string" || typeof value.build !== "string") return false;
+  if (![
+    "free",
+    "studio",
+    "unknown",
+  ].includes(String(value.edition))) return false;
+  if (value.platform !== "linux-x64") return false;
+  if (!["supported", "unsupported", "unknown"].includes(String(value.compatibility))) return false;
+  return typeof value.checkedAt === "string";
 }
 
 function isIdentity(value: unknown): value is ProjectIdentity {
@@ -38,6 +52,9 @@ export function validateResolveWorkspaceContext(value: unknown): ResolveWorkspac
   }
   if (value.identity !== null && !isIdentity(value.identity)) {
     throw new Error("Resolve editorContext.identity 非法");
+  }
+  if (value.runtime !== undefined && !isRuntime(value.runtime)) {
+    throw new Error("Resolve editorContext.runtime 非法");
   }
   if (value.latestSnapshot !== null) {
     if (!isRecord(value.latestSnapshot) || typeof value.latestSnapshot.fingerprint !== "string") {
@@ -67,8 +84,9 @@ export async function refreshResolveWorkspaceContext(
     checkedAt: new Date().toISOString(),
     reason: error instanceof Error ? error.message : String(error),
   }));
+  const runtime = adapter.getRuntimeInfo?.() ?? previous.runtime;
   if (health.state !== "online") {
-    return { ...previous, health };
+    return { ...previous, ...(runtime === undefined ? {} : { runtime }), health };
   }
 
   const result = await adapter.readProjectSnapshot(options).catch((error: unknown) => ({
@@ -83,6 +101,7 @@ export async function refreshResolveWorkspaceContext(
   if (!result.ok) {
     return {
       ...previous,
+      ...(runtime === undefined ? {} : { runtime }),
       health: {
         ...health,
         state: result.error.kind === "offline" ? "offline" : "unknown",
@@ -94,6 +113,7 @@ export async function refreshResolveWorkspaceContext(
     kind: "resolve",
     identity: result.value.identity,
     latestSnapshot: result.value,
+    ...(runtime === undefined ? {} : { runtime }),
     health,
   };
 }

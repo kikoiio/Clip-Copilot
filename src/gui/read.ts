@@ -11,6 +11,8 @@ import { waiversOf, type CheckResult, type Phase, type WorkspaceState } from "..
 import { loadMonitorState } from "../monitor/store.ts";
 import type { MonitorMetrics, SuggestionRecord } from "../monitor/types.ts";
 import type { WorkspaceSoftwareState } from "../sense/types.ts";
+import { assessCapability, getEditorCapabilities } from "../editor/capabilities.ts";
+import type { EditorHealth, MappingNote, ResolveWorkspaceContext } from "../editor/contracts.ts";
 import { applyWaivers } from "../verification/deep.ts";
 import { latestReportsSync, summarize, type DeepCheckReport } from "../verification/report.ts";
 import { WorkspaceError, loadState, stateExists } from "../workspace/store.ts";
@@ -95,6 +97,22 @@ export interface WorkspaceDetail extends WorkspaceSummary {
   handoff: string | null;
   /** 软件感知状态（阶段 5 F1/F3/F4）；感知未启用时为 null 并由界面标注。 */
   software: WorkspaceSoftwareState | null;
+  resolve: ResolveContextView | null;
+}
+
+export interface ResolveContextView {
+  health: EditorHealth;
+  runtime: ResolveWorkspaceContext["runtime"] | null;
+  identity: ResolveWorkspaceContext["identity"];
+  lastReadAt: string | null;
+  snapshot: null | {
+    fingerprint: string;
+    capturedAt: string;
+    counts: { tracks: number; clips: number; markers: number; subtitles: number; media: number };
+    mappingNotes: MappingNote[];
+  };
+  staleReason: string | null;
+  capabilities: { id: string; stage: string; support: string; available: boolean; reason: string | null }[];
 }
 
 /** 仓库根目录（包含 package.json 的最近祖先），与 coordinator 的定位规则一致。 */
@@ -134,6 +152,49 @@ function toStateSummary(dir: string, state: WorkspaceState): WorkspaceStateSumma
     },
     deepCheck: collectDeepCheckSummary(dir, state),
     nextAction: state.nextAction,
+  };
+}
+
+function toResolveContextView(context: ResolveWorkspaceContext | undefined): ResolveContextView | null {
+  if (!context) return null;
+  const health = context.health;
+  const snapshot = context.latestSnapshot;
+  const prerequisites = ["resolve_adapter_available", "mapping_rules_known"];
+  if (health.state === "online") prerequisites.push("resolve_connected");
+  if (context.identity?.projectId || context.identity?.projectName) prerequisites.push("active_project");
+  if (context.identity?.timelineId || context.identity?.timelineName) prerequisites.push("active_timeline");
+  if (snapshot) prerequisites.push("snapshot_available");
+  if (context.runtime?.compatibility === "supported") prerequisites.push("supported_resolve_version_selected");
+  if (context.runtime?.edition === "free") prerequisites.push("edition_requirements_confirmed");
+  const capabilities = getEditorCapabilities().map((capability) => {
+    const availability = assessCapability(capability.id, health, prerequisites);
+    return {
+      id: capability.id,
+      stage: capability.stage,
+      support: capability.support,
+      available: availability.available,
+      reason: availability.available ? null : availability.message,
+    };
+  });
+  return {
+    health,
+    runtime: context.runtime ?? null,
+    identity: context.identity,
+    lastReadAt: snapshot?.capturedAt ?? null,
+    snapshot: snapshot ? {
+      fingerprint: snapshot.fingerprint,
+      capturedAt: snapshot.capturedAt,
+      counts: {
+        tracks: snapshot.tracks.length,
+        clips: snapshot.clips.length,
+        markers: snapshot.markers.length,
+        subtitles: snapshot.subtitles.length,
+        media: snapshot.media.length,
+      },
+      mappingNotes: snapshot.mappingNotes,
+    } : null,
+    staleReason: health.state === "online" ? null : health.reason ?? "最近一次时间线快照可能已过期",
+    capabilities,
   };
 }
 
@@ -262,6 +323,7 @@ export async function getWorkspaceDetail(
     reports,
     handoff,
     software,
+    resolve: toResolveContextView(state.editorContext),
   };
 }
 

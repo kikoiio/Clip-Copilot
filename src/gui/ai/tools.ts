@@ -58,6 +58,7 @@ async function readStatus(args: Record<string, unknown>, ctx: AiToolContext): Pr
     deepCheck: detail.state.deepCheck,
     nextAction: detail.state.nextAction,
     software: detail.software,
+    resolve: detail.resolve,
     openSuggestions: detail.suggestions.filter((item) => item.status === "open" || item.status === "acknowledged").length,
   }, null, 2);
 }

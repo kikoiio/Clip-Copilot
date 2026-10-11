@@ -42,7 +42,7 @@ jobs:
           mkdir -p evidence/editor-protocol
           set -o pipefail
           npm run check 2>&1 | tee evidence/editor-protocol/check.log
-      - name: 编辑器协议定向测试（无 Resolve/GUI）
+      - name: Resolve 协议、状态、CLI 与只读投影测试（无 Resolve/GUI）
         run: |
           mkdir -p evidence/editor-protocol
           set -o pipefail
@@ -68,13 +68,17 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: 安装媒体与可访问性回归依赖
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ffmpeg libopengl0 libegl1 libgl1 at-spi2-core python3-gi python3-gi-cairo gir1.2-atspi-2.0 python3-pyatspi
       - name: 下载 AppImage 测试夹具（与本机验证版本一致）
         run: |
           mkdir -p tools
           curl -fL --retry 3 -o "$LMMS_APPIMAGE" \
             https://github.com/LMMS/lmms/releases/download/v1.2.2/lmms-1.2.2-linux-x86_64.AppImage
           curl -fL --retry 3 -o "$KDENLIVE_APPIMAGE" \
-            https://download.kdenlive.org/download/releases/26.08.1/linux/kdenlive-26.08.1-x86_64.AppImage
+            https://mirror.fcix.net/kdeftp/stable/kdenlive/26.08/linux/kdenlive-26.08.1-x86_64.AppImage
           chmod +x tools/*.AppImage
       - name: 全量回归（含 LMMS/Kdenlive 真实渲染冒烟）
         run: npm test
@@ -95,20 +99,32 @@ jobs:
       - name: 安装 X / AT-SPI 依赖
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q xvfb imagemagick x11-utils dbus dbus-x11 \
+          sudo apt-get install -y -q xvfb imagemagick x11-utils dbus dbus-x11 libopengl0 libegl1 libgl1 \
             at-spi2-core python3-gi python3-gi-cairo gir1.2-atspi-2.0 python3-pyatspi
       - name: 下载 Kdenlive AppImage
         run: |
           mkdir -p tools
           curl -fL --retry 3 -o "$KDENLIVE_APPIMAGE" \
-            https://download.kdenlive.org/download/releases/26.08.1/linux/kdenlive-26.08.1-x86_64.AppImage
+            https://mirror.fcix.net/kdeftp/stable/kdenlive/26.08/linux/kdenlive-26.08.1-x86_64.AppImage
           chmod +x "$KDENLIVE_APPIMAGE"
       - name: 构建并生成临时工作区
         run: |
           npm run build
           npm run gui:renderer
           WS="$RUNNER_TEMP/ci-ws/demo"
-          npm run cli -- init --workspace "$WS" --config docs/task-configs/sample-a.json
+          CONFIG="$RUNNER_TEMP/sample-a.json"
+          cat > "$CONFIG" <<'JSON'
+          {
+            "schemaVersion": 1,
+            "title": "CI 合成样例",
+            "theme": "山间清晨",
+            "moodArc": [{ "name": "舒展", "energy": 1 }],
+            "duration": { "minSeconds": 30, "maxSeconds": 60 },
+            "outputSpec": { "width": 1920, "height": 1080, "fps": 30 },
+            "assets": [{ "sourceUrl": "https://example.invalid/video", "licenseUrl": "https://example.invalid/license" }]
+          }
+          JSON
+          npm run cli -- init --workspace "$WS" --config "$CONFIG"
           mkdir -p "$WS/projects"
           cp templates/kdenlive/base.kdenlive "$WS/projects/final.kdenlive"
           echo "SENSE_WS=$WS" >> "$GITHUB_ENV"

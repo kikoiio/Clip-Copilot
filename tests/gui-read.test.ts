@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -140,8 +141,12 @@ test("T3：未初始化目录抛出与 CLI 一致的错误", async () => {
   );
 });
 
-test("T3：既有样板工作区摘要与 CLI status 口径一致", async () => {
+test("T3：既有样板工作区摘要与 CLI status 口径一致", async (t) => {
   const dir = path.resolve("workspaces", "mountain-morning");
+  if (!existsSync(path.join(dir, "state.json"))) {
+    t.skip("本机未提供被 gitignore 的 mountain-morning 样板工作区");
+    return;
+  }
   const detail = await getWorkspaceDetail(dir);
   assert.equal(detail.name, "mountain-morning");
   assert.equal(detail.state.phase, "done");

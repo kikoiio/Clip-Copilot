@@ -55,6 +55,24 @@ function softwareText(detail: WorkspaceDetail): string[] {
   return lines;
 }
 
+function resolveText(detail: WorkspaceDetail): string[] {
+  const resolve = detail.resolve;
+  if (!resolve) return ["- Resolve：此工作区没有 Resolve 上下文"];
+  const rows = [
+    `- Resolve 连接：${resolve.health.state}${resolve.health.reason ? `（${resolve.health.reason}）` : ""}`,
+    `- Resolve 运行时：${resolve.runtime ? `${resolve.runtime.version} / ${resolve.runtime.build} / ${resolve.runtime.edition} / ${resolve.runtime.compatibility}` : "未知"}`,
+    `- Resolve 最近读取：${resolve.lastReadAt ?? "没有成功读取记录"}`,
+  ];
+  if (resolve.snapshot) {
+    rows.push(`- Resolve 快照：${resolve.snapshot.fingerprint}；轨道 ${resolve.snapshot.counts.tracks}、片段 ${resolve.snapshot.counts.clips}、标记 ${resolve.snapshot.counts.markers}、字幕 ${resolve.snapshot.counts.subtitles}、媒体 ${resolve.snapshot.counts.media}；映射备注 ${resolve.snapshot.mappingNotes.length} 条`);
+  } else {
+    rows.push("- Resolve 快照：暂无");
+  }
+  if (resolve.staleReason) rows.push(`- Resolve 快照过期提示：${resolve.staleReason}`);
+  rows.push(`- Resolve 可用能力：${resolve.capabilities.filter((item) => item.available).map((item) => item.id).join("、") || "无"}`);
+  return rows;
+}
+
 export function buildSystemPrompt(detail: WorkspaceDetail): string {
   return [
     `你是「AI 创作工作台」的助手，协助创作者推进短片工作区「${detail.name}」。`,
@@ -68,6 +86,7 @@ export function buildSystemPrompt(detail: WorkspaceDetail): string {
     `- 下一步：${detail.state.nextAction}`,
     `- 未处理建议：${suggestionsText(detail)}`,
     ...softwareText(detail),
+    ...resolveText(detail),
     "",
     "规则：",
     "1. 依据工具返回的真实状态回答，不得虚构；快照可能过时，涉及具体数字与建议时先调用工具查询。",

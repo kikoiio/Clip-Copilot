@@ -74,7 +74,7 @@ jobs:
           curl -fL --retry 3 -o "$LMMS_APPIMAGE" \
             https://github.com/LMMS/lmms/releases/download/v1.2.2/lmms-1.2.2-linux-x86_64.AppImage
           curl -fL --retry 3 -o "$KDENLIVE_APPIMAGE" \
-            https://download.kdenlive.org/download/releases/26.08.1/linux/kdenlive-26.08.1-x86_64.AppImage
+            https://mirror.fcix.net/kdeftp/stable/kdenlive/26.08/linux/kdenlive-26.08.1-x86_64.AppImage
           chmod +x tools/*.AppImage
       - name: 全量回归（含 LMMS/Kdenlive 真实渲染冒烟）
         run: npm test
@@ -101,7 +101,7 @@ jobs:
         run: |
           mkdir -p tools
           curl -fL --retry 3 -o "$KDENLIVE_APPIMAGE" \
-            https://download.kdenlive.org/download/releases/26.08.1/linux/kdenlive-26.08.1-x86_64.AppImage
+            https://mirror.fcix.net/kdeftp/stable/kdenlive/26.08/linux/kdenlive-26.08.1-x86_64.AppImage
           chmod +x "$KDENLIVE_APPIMAGE"
       - name: 构建并生成临时工作区
         run: |

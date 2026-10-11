@@ -1,11 +1,31 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
+  createResolveAdapter,
   createResolveFixtureAdapter,
   RESOLVE_FIXTURE_TIMESTAMP,
 } from "../src/editor/resolve/adapter.ts";
+import { createResolveSupportPolicy } from "../src/editor/resolve/compatibility.ts";
+import type { ResolveProbeRequest, ResolveProbeResponse } from "../src/editor/resolve/protocol.ts";
 
 const call = { timeoutMs: 100 };
+
+const summary = JSON.parse(readFileSync(path.join(process.cwd(), "tests/fixtures/resolve/project-summary.json"), "utf8")) as Record<string, unknown>;
+
+function realAdapter(response: ResolveProbeResponse): ReturnType<typeof createResolveAdapter> {
+  return createResolveAdapter({
+    bridge: {
+      async request(request: ResolveProbeRequest): Promise<ResolveProbeResponse> {
+        void request;
+        return response;
+      },
+    },
+    supportPolicy: createResolveSupportPolicy({ acceptedBuilds: ["21.0.0-fixture.001"] }),
+    now: () => RESOLVE_FIXTURE_TIMESTAMP,
+  });
+}
 
 test("固定夹具在线模式提供健康、能力声明和只读摘要", async () => {
   const adapter = createResolveFixtureAdapter();
@@ -96,4 +116,79 @@ test("不支持模式的能力评估不会误报为可用", () => {
   const result = adapter.assess("edit.timeline");
   assert.equal(result.available, false);
   if (!result.available) assert.equal(result.reason, "unsupported");
+});
+
+test("真实适配器在兼容运行时映射只读摘要", async () => {
+  const adapter = realAdapter({
+    ok: true,
+    runtime: {
+      version: "21.0.0-fixture",
+      build: "21.0.0-fixture.001",
+      edition: "free",
+      platform: "linux-x64",
+      compatibility: "unknown",
+      checkedAt: RESOLVE_FIXTURE_TIMESTAMP,
+    },
+    summary,
+  });
+  const health = await adapter.getHealth(call);
+  assert.deepEqual(health, {
+    state: "online",
+    checkedAt: RESOLVE_FIXTURE_TIMESTAMP,
+    version: "21.0.0-fixture",
+    edition: "free",
+  });
+  const result = await adapter.readProjectSnapshot(call);
+  assert.equal(result.ok, true);
+  assert.equal(adapter.getRuntimeInfo()?.compatibility, "supported");
+});
+
+test("真实适配器拒绝未验证构建且不读取摘要成功", async () => {
+  let snapshotCalls = 0;
+  const adapter = createResolveAdapter({
+    bridge: {
+      async request(request: ResolveProbeRequest): Promise<ResolveProbeResponse> {
+        if (request.operation === "project_snapshot") snapshotCalls += 1;
+        return {
+          ok: true,
+          runtime: {
+            version: "21.0.0-fixture",
+            build: "21.0.0-unverified",
+            edition: "free",
+            platform: "linux-x64",
+            compatibility: "unknown",
+            checkedAt: RESOLVE_FIXTURE_TIMESTAMP,
+          },
+          ...(request.operation === "project_snapshot" ? { summary } : {}),
+        };
+      },
+    },
+    supportPolicy: createResolveSupportPolicy({ acceptedBuilds: ["21.0.0-fixture.001"] }),
+  });
+  const health = await adapter.getHealth(call);
+  assert.equal(health.state, "unknown");
+  const result = await adapter.readProjectSnapshot(call);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.kind, "unsupported");
+    assert.match(result.error.reason, /not been verified/);
+  }
+  assert.equal(snapshotCalls, 1);
+});
+
+test("真实适配器保留桥接错误分类", async () => {
+  const adapter = realAdapter({
+    ok: false,
+    error: { kind: "offline", reason: "Resolve not running", retryable: true },
+  });
+  const health = await adapter.getHealth(call);
+  assert.equal(health.state, "offline");
+  const result = await adapter.readProjectSnapshot(call);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.deepEqual(result.error, {
+    capabilityId: "read.project_snapshot",
+    kind: "offline",
+    reason: "Resolve not running",
+    retryable: true,
+  });
 });

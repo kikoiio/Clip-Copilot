@@ -42,7 +42,7 @@ jobs:
           mkdir -p evidence/editor-protocol
           set -o pipefail
           npm run check 2>&1 | tee evidence/editor-protocol/check.log
-      - name: 编辑器协议定向测试（无 Resolve/GUI）
+      - name: Resolve 协议、状态、CLI 与只读投影测试（无 Resolve/GUI）
         run: |
           mkdir -p evidence/editor-protocol
           set -o pipefail

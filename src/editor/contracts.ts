@@ -10,6 +10,20 @@ export type ProjectEffect = "read_only" | "mutates_project" | "creates_output";
 
 export type ApprovalRequirement = "none" | "required" | "separate";
 
+export type ResolveEdition = "free" | "studio" | "unknown";
+
+export type ResolveCompatibility = "supported" | "unsupported" | "unknown";
+
+/** Runtime provenance returned by the Resolve read-only probe. */
+export interface ResolveRuntimeInfo {
+  version: string;
+  build: string;
+  edition: ResolveEdition;
+  platform: "linux-x64";
+  compatibility: ResolveCompatibility;
+  checkedAt: string;
+}
+
 export interface EditorCapability {
   id: string;
   stage: CapabilityStage;
@@ -107,6 +121,8 @@ export interface ResolveWorkspaceContext {
   kind: "resolve";
   identity: ProjectIdentity | null;
   latestSnapshot: TimelineSnapshot | null;
+  /** Source build and edition for the latest health/snapshot observation. */
+  runtime?: ResolveRuntimeInfo;
   health: EditorHealth;
 }
 
@@ -132,6 +148,8 @@ export type AdapterResult<T> =
 export interface EditorAdapter {
   readonly editorKind: "resolve";
   getHealth(options: AdapterCallOptions): Promise<EditorHealth>;
+  /** Optional runtime provenance used by Resolve workspace persistence. */
+  getRuntimeInfo?(): ResolveRuntimeInfo | undefined;
   getCapabilities(): readonly EditorCapability[];
   readProjectSnapshot(
     options: AdapterCallOptions,

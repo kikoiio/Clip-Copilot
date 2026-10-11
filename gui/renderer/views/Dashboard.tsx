@@ -6,12 +6,27 @@ export function Dashboard({ detail }: { detail: WorkspaceDetail; onChanged: () =
   const state = detail.state;
   const deep = state.deepCheck;
   const software = detail.software;
+  const resolve = detail.resolve;
   return (
     <div className="stack">
       <section className="card">
         <h2>阶段机</h2>
         <PhaseTimeline phase={state.phase} />
       </section>
+      {resolve && <section className="card" aria-live="polite">
+        <h2>DaVinci Resolve</h2>
+        <p>连接：{resolve.health.state}{resolve.health.reason ? ` · ${resolve.health.reason}` : ""}</p>
+        <p>运行时：{resolve.runtime ? `${resolve.runtime.version} · ${resolve.runtime.build} · ${resolve.runtime.edition} · ${resolve.runtime.compatibility}` : "未知"}</p>
+        <p>最近成功读取：{resolve.lastReadAt ?? "暂无"}</p>
+        {resolve.snapshot ? <>
+          <p>项目：{resolve.identity?.projectName ?? "未知"} · 时间线：{resolve.identity?.timelineName ?? "未知"}</p>
+          <p>快照指纹：<code>{resolve.snapshot.fingerprint}</code></p>
+          <p>轨道 {resolve.snapshot.counts.tracks} · 片段 {resolve.snapshot.counts.clips} · 标记 {resolve.snapshot.counts.markers} · 字幕 {resolve.snapshot.counts.subtitles} · 媒体 {resolve.snapshot.counts.media}</p>
+          <p>映射备注：{resolve.snapshot.mappingNotes.length}</p>
+        </> : <p className="muted">暂无成功快照</p>}
+        {resolve.staleReason && <p className="muted">快照可能过期：{resolve.staleReason}</p>}
+        <p>可用能力：{resolve.capabilities.filter((item) => item.available).map((item) => item.id).join("、") || "无"}</p>
+      </section>}
       <section className="card" aria-live="polite">
         <h2>软件活动</h2>
         {software ? (

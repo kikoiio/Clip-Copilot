@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { commands } from "./workflow/coordinator.ts";
 import { cmdMonitor } from "./monitor/commands.ts";
+import { cmdResolve } from "./editor/resolve/command.ts";
 
 type CommandHandler = (args: string[]) => Promise<number>;
 
@@ -41,6 +42,8 @@ const HELP = `山间清晨短片工作流
   monitor suggestions --workspace <目录> [--all]       查看主动建议
   monitor decide --workspace <目录> --id <建议ID> --decision acknowledge|ignore
   monitor metrics --workspace <目录>                   查看通知与处理统计
+  resolve read --workspace <目录> [--timeout-ms <毫秒>]
+                                                      只读刷新 Resolve 状态与时间线摘要
 
 环境变量:
   LMMS_APPIMAGE      LMMS AppImage 路径（默认 /home/neo/Applications/lmms-1.2.2-linux-x86_64.AppImage）
@@ -71,7 +74,11 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(HELP);
     return 0;
   }
-  const handler: CommandHandler | undefined = command === "monitor" ? cmdMonitor : commands[command];
+  const handler: CommandHandler | undefined = command === "monitor"
+    ? cmdMonitor
+    : command === "resolve"
+      ? cmdResolve
+      : commands[command];
   if (!handler) {
     process.stderr.write(`未知命令: ${command}\n\n${HELP}`);
     return 2;

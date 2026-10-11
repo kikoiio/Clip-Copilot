@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "runtime": {
+    "version": "21.0.0-fixture",
+    "build": "21.0.0-fixture.001",
+    "edition": "free",
+    "platform": "linux-x64",
+    "compatibility": "supported",
+    "checkedAt": "2026-10-11T00:00:00.000Z"
+  }
+}

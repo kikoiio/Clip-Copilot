@@ -10,12 +10,23 @@ import type {
   EditorAdapter,
   EditorCapability,
   EditorHealth,
+  ResolveRuntimeInfo,
   TimelineSnapshot,
 } from "../contracts.ts";
 import {
   mapResolveProjectSummary,
   type ResolveProjectSummaryResponse,
 } from "./mapping.ts";
+import type { ResolveBridge } from "./bridge.ts";
+import {
+  createResolveSupportPolicy,
+  type ResolveSupportPolicy,
+} from "./compatibility.ts";
+import {
+  makeProbeRequest,
+  type ResolveProbeError,
+  type ResolveProbeResponse,
+} from "./protocol.ts";
 
 export type ResolveFixtureMode = "online" | "offline" | "protocol" | "unsupported";
 
@@ -32,6 +43,13 @@ export interface ResolveFixtureAdapterOptions {
   offlineReason?: string;
   protocolReason?: string;
   unsupportedCapabilityId?: string;
+}
+
+export interface ResolveAdapterOptions {
+  bridge: ResolveBridge;
+  supportPolicy: ResolveSupportPolicy;
+  defaultTimeoutMs?: number;
+  now?: () => string;
 }
 
 export const RESOLVE_FIXTURE_TIMESTAMP = "2026-10-11T00:00:00.000Z";
@@ -92,6 +110,10 @@ export class ResolveFixtureAdapter implements EditorAdapter {
 
   getCapabilities(): readonly EditorCapability[] {
     return getEditorCapabilities();
+  }
+
+  getRuntimeInfo(): ResolveRuntimeInfo {
+    return fixtureRuntime(this.checkedAt);
   }
 
   async readProjectSnapshot(
@@ -190,6 +212,96 @@ export class ResolveFixtureAdapter implements EditorAdapter {
   }
 }
 
+/** Real read-only Resolve adapter backed by the one-shot process bridge. */
+export class ResolveAdapter implements EditorAdapter {
+  readonly editorKind = "resolve" as const;
+  private readonly bridge: ResolveBridge;
+  private readonly supportPolicy: ResolveSupportPolicy;
+  private readonly defaultTimeoutMs: number;
+  private readonly now: () => string;
+  private runtime: ResolveRuntimeInfo | undefined;
+
+  constructor(options: ResolveAdapterOptions) {
+    this.bridge = options.bridge;
+    this.supportPolicy = options.supportPolicy;
+    this.defaultTimeoutMs = options.defaultTimeoutMs ?? 15_000;
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  async getHealth(options: AdapterCallOptions): Promise<EditorHealth> {
+    const response = await this.bridge.request(makeProbeRequest("health"), this.withDefaultTimeout(options));
+    if (!response.ok) {
+      this.runtime = response.runtime;
+      return healthFromFailure(response.error, response.runtime);
+    }
+    this.runtime = withCompatibility(response.runtime, this.supportPolicy);
+    const runtime = this.runtime;
+    if (runtime.compatibility !== "supported") {
+      return {
+        state: "unknown",
+        checkedAt: runtime.checkedAt,
+        version: runtime.version,
+        edition: runtime.edition,
+        reason: compatibilityReason(runtime),
+      };
+    }
+    return {
+      state: "online",
+      checkedAt: runtime.checkedAt,
+      version: runtime.version,
+      edition: runtime.edition,
+    };
+  }
+
+  getRuntimeInfo(): ResolveRuntimeInfo | undefined {
+    return this.runtime;
+  }
+
+  getCapabilities(): readonly EditorCapability[] {
+    return getEditorCapabilities();
+  }
+
+  async readProjectSnapshot(options: AdapterCallOptions): Promise<AdapterResult<TimelineSnapshot>> {
+    const response = await this.bridge.request(makeProbeRequest("project_snapshot"), this.withDefaultTimeout(options));
+    if (!response.ok) {
+      this.runtime = response.runtime ?? this.runtime;
+      return { ok: false, error: adapterError("read.project_snapshot", response.error) };
+    }
+    this.runtime = withCompatibility(response.runtime, this.supportPolicy);
+    if (this.runtime.compatibility !== "supported") {
+      return {
+        ok: false,
+        error: {
+          capabilityId: "read.project_snapshot",
+          kind: "unsupported",
+          reason: compatibilityReason(this.runtime),
+          retryable: false,
+        },
+      };
+    }
+    if (response.summary === undefined) {
+      return {
+        ok: false,
+        error: {
+          capabilityId: "read.project_snapshot",
+          kind: "protocol",
+          reason: "Resolve project_snapshot response is missing summary",
+          retryable: false,
+        },
+      };
+    }
+    return { ok: true, value: mapResolveProjectSummary(response.summary, { capturedAt: this.now() }) };
+  }
+
+  private withDefaultTimeout(options: AdapterCallOptions): AdapterCallOptions {
+    return { ...options, timeoutMs: options.timeoutMs > 0 ? options.timeoutMs : this.defaultTimeoutMs };
+  }
+}
+
+export function createResolveAdapter(options: ResolveAdapterOptions): ResolveAdapter {
+  return new ResolveAdapter(options);
+}
+
 export function createResolveFixtureAdapter(options: ResolveFixtureAdapterOptions = {}): ResolveFixtureAdapter {
   return new ResolveFixtureAdapter(options);
 }
@@ -199,6 +311,45 @@ export const createFixtureAdapter = createResolveFixtureAdapter;
 
 function readFixtureSummary(): ResolveProjectSummaryResponse {
   return JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as ResolveProjectSummaryResponse;
+}
+
+function fixtureRuntime(checkedAt: string): ResolveRuntimeInfo {
+  return {
+    version: "21.0.0-fixture",
+    build: "21.0.0-fixture.001",
+    edition: "free",
+    platform: "linux-x64",
+    compatibility: "supported",
+    checkedAt,
+  };
+}
+
+function withCompatibility(
+  runtime: ResolveRuntimeInfo,
+  policy: ResolveSupportPolicy,
+): ResolveRuntimeInfo {
+  return { ...runtime, compatibility: policy.assess(runtime) };
+}
+
+function healthFromFailure(error: ResolveProbeError, runtime: ResolveRuntimeInfo | undefined): EditorHealth {
+  return {
+    state: error.kind === "offline" ? "offline" : "unknown",
+    checkedAt: runtime?.checkedAt ?? new Date().toISOString(),
+    ...(runtime?.version === undefined ? {} : { version: runtime.version }),
+    ...(runtime?.edition === undefined ? {} : { edition: runtime.edition }),
+    reason: error.reason,
+  };
+}
+
+function adapterError(capabilityId: string, error: ResolveProbeError): Extract<AdapterResult<never>, { ok: false }>["error"] {
+  return { capabilityId, kind: error.kind, reason: error.reason, retryable: error.retryable };
+}
+
+function compatibilityReason(runtime: ResolveRuntimeInfo): string {
+  if (runtime.compatibility === "unsupported") return `Resolve runtime ${runtime.version}/${runtime.build} is unsupported on ${runtime.platform}`;
+  if (runtime.edition === "studio") return "Studio runtime is recorded but not part of the Free baseline verification";
+  if (runtime.edition === "unknown") return "Resolve edition is unknown";
+  return `Resolve build ${runtime.build} has not been verified`;
 }
 
 function timeoutError(

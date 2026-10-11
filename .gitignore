@@ -9,6 +9,8 @@ docs/*
 docs/spec_docs/*
 !docs/spec_docs/phase-0/
 !docs/spec_docs/phase-0/*.md
+!docs/spec_docs/phase-1/
+!docs/spec_docs/phase-1/*.md
 workspaces/
 testmedia/
 
